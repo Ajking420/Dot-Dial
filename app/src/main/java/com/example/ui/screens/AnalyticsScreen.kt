@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -73,14 +74,17 @@ fun AnalyticsScreen(
     var newRulePattern by remember { mutableStateOf("") }
     var newRuleLabel by remember { mutableStateOf("") }
 
+    val listState = rememberLazyListState()
+
     LazyColumn(
+        state = listState,
         modifier = modifier
             .fillMaxSize()
             .padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
         contentPadding = PaddingValues(top = 8.dp, bottom = 96.dp)
     ) {
-        item {
+        item(key = "analytics_header", contentType = "header") {
             SectionHeaderRow(
                 title = "CALL ANALYTICS & SPAM SHIELD",
                 subtitle = "Duration metrics & real-time caller defense"
@@ -99,7 +103,7 @@ fun AnalyticsScreen(
         }
 
         // 2x2 KPI Summary Grid
-        item {
+        item(key = "analytics_kpi_grid", contentType = "kpi_grid") {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -139,7 +143,7 @@ fun AnalyticsScreen(
         }
 
         // Dot-Matrix 7-Day Call Duration Chart
-        item {
+        item(key = "analytics_chart", contentType = "chart") {
             NothingSurfaceCard(modifier = Modifier.fillMaxWidth()) {
                 Column(
                     modifier = Modifier
@@ -179,7 +183,7 @@ fun AnalyticsScreen(
 
         // Top Contacts Leaderboard
         if (analytics.topContacts.isNotEmpty()) {
-            item {
+            item(key = "analytics_top_contacts", contentType = "leaderboard") {
                 NothingSurfaceCard(modifier = Modifier.fillMaxWidth()) {
                     Column(
                         modifier = Modifier
@@ -223,7 +227,7 @@ fun AnalyticsScreen(
         }
 
         // Real-Time Gemini Spam Inspector
-        item {
+        item(key = "analytics_spam_inspector", contentType = "inspector") {
             NothingSurfaceCard(
                 modifier = Modifier.fillMaxWidth(),
                 highlighted = true
@@ -343,7 +347,7 @@ fun AnalyticsScreen(
         }
 
         // Custom Spam Prefix Rules
-        item {
+        item(key = "analytics_spam_rules_input", contentType = "rules_input") {
             NothingSurfaceCard(modifier = Modifier.fillMaxWidth()) {
                 Column(
                     modifier = Modifier
@@ -394,7 +398,11 @@ fun AnalyticsScreen(
             }
         }
 
-        items(spamRules, key = { it.id }) { rule ->
+        items(
+            items = spamRules,
+            key = { it.id },
+            contentType = { "spam_rule" }
+        ) { rule ->
             NothingSurfaceCard(modifier = Modifier.fillMaxWidth()) {
                 Row(
                     modifier = Modifier

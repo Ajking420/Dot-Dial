@@ -1,6 +1,5 @@
 package com.example.ui.screens
 
-import android.text.format.DateUtils
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -23,6 +22,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -107,6 +107,10 @@ fun DialerScreen(
         T9Utils.buildNumberLookup(contacts)
     }
 
+    val recentListState = rememberLazyListState()
+    val predictiveListState = rememberLazyListState()
+    val nowMs = remember(recentLogs.size) { System.currentTimeMillis() }
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -127,7 +131,7 @@ fun DialerScreen(
                         .padding(end = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    PulsingDotIndicator(size = 8.dp)
+                    PulsingDotIndicator(size = 8.dp, active = false)
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
                         text = brandHeaderText,
@@ -257,6 +261,7 @@ fun DialerScreen(
 
             if (dialerQuery.isNotBlank()) {
                 LazyColumn(
+                    state = predictiveListState,
                     modifier = Modifier.fillMaxSize(),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
@@ -305,6 +310,7 @@ fun DialerScreen(
                 }
             } else {
                 LazyColumn(
+                    state = recentListState,
                     modifier = Modifier.fillMaxSize(),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                     contentPadding = PaddingValues(bottom = 8.dp)
@@ -348,6 +354,7 @@ fun DialerScreen(
                             RecentCallRow(
                                 log = log,
                                 photoUri = matchedContact?.photoUri,
+                                nowMs = nowMs,
                                 onCall = { onPlaceCall(log.phoneNumber, matchedContact) }
                             )
                         }
@@ -618,6 +625,7 @@ private fun PredictiveContactRow(
 fun RecentCallRow(
     log: CallLogEntity,
     photoUri: String?,
+    nowMs: Long = remember { System.currentTimeMillis() },
     onCall: () -> Unit,
     onDelete: (() -> Unit)? = null
 ) {
@@ -684,12 +692,8 @@ fun RecentCallRow(
                             )
                         }
                     }
-                    val relTime = remember(log.id, log.timestamp) {
-                        DateUtils.getRelativeTimeSpanString(
-                            log.timestamp,
-                            System.currentTimeMillis(),
-                            DateUtils.MINUTE_IN_MILLIS
-                        ).toString()
+                    val relTime = remember(log.id, log.timestamp, nowMs) {
+                        T9Utils.formatRelativeTimestamp(log.timestamp, nowMs)
                     }
                     Text(
                         text = "$relTime  •  ${T9Utils.formatDuration(log.durationSeconds)}",

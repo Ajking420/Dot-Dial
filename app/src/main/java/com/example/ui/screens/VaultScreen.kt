@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -133,7 +134,10 @@ fun VaultScreen(
 
         Spacer(modifier = Modifier.height(12.dp))
 
+        val vaultListState = rememberLazyListState()
+
         LazyColumn(
+            state = vaultListState,
             modifier = Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(12.dp),
             contentPadding = PaddingValues(bottom = 96.dp)
@@ -169,7 +173,11 @@ fun VaultScreen(
                     }
                 }
             } else {
-                items(recordings, key = { it.id }) { rec ->
+                items(
+                    items = recordings,
+                    key = { it.id },
+                    contentType = { "vault_recording" }
+                ) { rec ->
                     RecordingVaultCard(
                         recording = rec,
                         isPlaying = playingRecordingId == rec.id,

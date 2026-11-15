@@ -28,6 +28,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BluetoothAudio
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CallEnd
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Dialpad
 import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.FiberManualRecord
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -68,6 +70,7 @@ import com.example.telecom.CallSessionState
 import com.example.ui.components.AudioGlyphVisualizer
 import com.example.ui.components.CallerVideoBackdrop
 import com.example.ui.components.ContactAvatarCircle
+import com.example.ui.components.DotKeypadButton
 import com.example.ui.components.DotMatrixTagChip
 import com.example.ui.components.GlyphCallVisualizer
 import com.example.ui.components.PulsingDotIndicator
@@ -75,6 +78,13 @@ import com.example.ui.theme.MatrixEmerald
 import com.example.ui.theme.NothingBlack
 import com.example.ui.theme.NothingRed
 import com.example.voice.VoiceUiState
+
+private val InCallDialpadRows = listOf(
+    listOf("1" to "∞", "2" to "ABC", "3" to "DEF"),
+    listOf("4" to "GHI", "5" to "JKL", "6" to "MNO"),
+    listOf("7" to "PQRS", "8" to "TUV", "9" to "WXYZ"),
+    listOf("*" to "", "0" to "+", "#" to "")
+)
 
 @Composable
 fun ActiveCallOverlay(
@@ -91,9 +101,12 @@ fun ActiveCallOverlay(
     onToggleRecord: () -> Unit,
     onSimulateVoicePhrase: (String) -> Unit,
     onUpdateNotes: (String) -> Unit,
+    onSendDtmfDigit: (String) -> Unit,
+    onClearDtmfDigits: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     var showMiniNotepad by remember { mutableStateOf(false) }
+    var showInCallDialpad by remember { mutableStateOf(false) }
 
     val routeIcon = when (session.activeAudioRoute) {
         ActiveAudioRoute.BLUETOOTH -> Icons.Default.BluetoothAudio
@@ -285,9 +298,13 @@ fun ActiveCallOverlay(
 
                 Spacer(modifier = Modifier.height(14.dp))
 
-                // Hands-Free Always-On Voice Control Panel (No Mic Button Tap Required!)
-                if (voiceControlEnabled && (session.lifecycle == CallLifecycleState.INCOMING_RINGING ||
-                        session.lifecycle == CallLifecycleState.ACTIVE)
+                // Hands-Free Always-On Voice Control Panel (auto-hides when In-Call Dialpad is open)
+                AnimatedVisibility(
+                    visible = !showInCallDialpad && voiceControlEnabled &&
+                        (session.lifecycle == CallLifecycleState.INCOMING_RINGING ||
+                            session.lifecycle == CallLifecycleState.ACTIVE),
+                    enter = fadeIn() + expandVertically(),
+                    exit = fadeOut() + shrinkVertically()
                 ) {
                     Surface(
                         shape = RoundedCornerShape(22.dp),
@@ -370,9 +387,93 @@ fun ActiveCallOverlay(
                     }
                 }
 
+                // Expandable In-Call DTMF Dialpad
+                AnimatedVisibility(
+                    visible = showInCallDialpad && (session.lifecycle == CallLifecycleState.ACTIVE ||
+                        session.lifecycle == CallLifecycleState.DIALING),
+                    enter = fadeIn() + expandVertically(),
+                    exit = fadeOut() + shrinkVertically()
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(24.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.94f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 8.dp)
+                            .testTag("in_call_dialpad_panel")
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = if (session.dtmfDigits.isBlank()) "IN-CALL KEYPAD"
+                                    else session.dtmfDigits,
+                                    style = if (session.dtmfDigits.isBlank()) {
+                                        MaterialTheme.typography.labelMedium
+                                    } else {
+                                        MaterialTheme.typography.titleLarge.copy(letterSpacing = 2.sp)
+                                    },
+                                    color = if (session.dtmfDigits.isBlank()) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurface
+                                    },
+                                    maxLines = 1,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .padding(horizontal = 6.dp)
+                                        .testTag("in_call_dtmf_display")
+                                )
+                                if (session.dtmfDigits.isNotEmpty()) {
+                                    IconButton(
+                                        onClick = onClearDtmfDigits,
+                                        modifier = Modifier
+                                            .size(36.dp)
+                                            .testTag("in_call_dtmf_clear_button")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Close,
+                                            contentDescription = "Clear entered digits",
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                }
+                            }
+
+                            InCallDialpadRows.forEach { row ->
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    row.forEach { (digit, letters) ->
+                                        DotKeypadButton(
+                                            digit = digit,
+                                            letters = letters,
+                                            size = 54.dp,
+                                            onClick = { onSendDtmfDigit(digit) }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Expandable Mini Notepad inside In-Call UI
                 AnimatedVisibility(
-                    visible = showMiniNotepad && session.lifecycle == CallLifecycleState.ACTIVE,
+                    visible = showMiniNotepad && !showInCallDialpad &&
+                        session.lifecycle == CallLifecycleState.ACTIVE,
                     enter = fadeIn() + expandVertically(),
                     exit = fadeOut() + shrinkVertically()
                 ) {
@@ -419,14 +520,14 @@ fun ActiveCallOverlay(
             Column(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+                verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 if (session.lifecycle == CallLifecycleState.ACTIVE ||
                     session.lifecycle == CallLifecycleState.DIALING
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceEvenly
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         CallControlRoundButton(
                             icon = if (session.isMuted) Icons.Default.MicOff else Icons.Default.Mic,
@@ -434,6 +535,17 @@ fun ActiveCallOverlay(
                             active = session.isMuted,
                             onClick = onToggleMute,
                             testTag = "call_mute_button"
+                        )
+                        CallControlRoundButton(
+                            icon = Icons.Default.Dialpad,
+                            label = "KEYPAD",
+                            active = showInCallDialpad,
+                            onClick = {
+                                val next = !showInCallDialpad
+                                showInCallDialpad = next
+                                if (next) showMiniNotepad = false
+                            },
+                            testTag = "call_keypad_button"
                         )
                         CallControlRoundButton(
                             icon = Icons.Default.FiberManualRecord,
@@ -445,9 +557,13 @@ fun ActiveCallOverlay(
                         )
                         CallControlRoundButton(
                             icon = Icons.Default.EditNote,
-                            label = "NOTEPAD",
+                            label = "NOTES",
                             active = showMiniNotepad,
-                            onClick = { showMiniNotepad = !showMiniNotepad },
+                            onClick = {
+                                val next = !showMiniNotepad
+                                showMiniNotepad = next
+                                if (next) showInCallDialpad = false
+                            },
                             testTag = "call_notepad_button"
                         )
                         CallControlRoundButton(
@@ -526,7 +642,7 @@ private fun CallControlRoundButton(
         Surface(
             modifier = Modifier
                 .minimumInteractiveComponentSize()
-                .size(56.dp)
+                .size(50.dp)
                 .clip(CircleShape)
                 .clickable(onClick = onClick)
                 .testTag(testTag),
@@ -545,7 +661,7 @@ private fun CallControlRoundButton(
         }
         Text(
             text = label,
-            style = MaterialTheme.typography.labelSmall,
+            style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.5.sp),
             color = MaterialTheme.colorScheme.onSurface
         )
     }

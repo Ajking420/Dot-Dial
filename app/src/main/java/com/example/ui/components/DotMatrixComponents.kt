@@ -239,7 +239,7 @@ fun NothingSurfaceCard(
 ) {
     val style = LocalDotDialStyle.current
     val borderColor = if (highlighted) MaterialTheme.colorScheme.primary else style.hairlineBorder
-    val containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.92f)
+    val containerColor = MaterialTheme.colorScheme.surfaceVariant
 
     Surface(
         modifier = modifier.then(
@@ -308,6 +308,15 @@ fun PulsingDotIndicator(
     size: Dp = 10.dp,
     active: Boolean = true
 ) {
+    if (!active) {
+        Box(
+            modifier = Modifier
+                .size(size)
+                .clip(CircleShape)
+                .background(color.copy(alpha = 0.72f))
+        )
+        return
+    }
     val transition = rememberInfiniteTransition(label = "dot_pulse")
     val pulse by transition.animateFloat(
         initialValue = 0.40f,
@@ -321,7 +330,7 @@ fun PulsingDotIndicator(
     Box(
         modifier = Modifier
             .size(size)
-            .graphicsLayer { alpha = if (active) pulse else 0.35f }
+            .graphicsLayer { alpha = pulse }
             .clip(CircleShape)
             .background(color)
     )
@@ -377,13 +386,14 @@ fun DotKeypadButton(
     letters: String,
     onClick: () -> Unit,
     onLongClick: (() -> Unit)? = null,
+    size: Dp = 70.dp,
     modifier: Modifier = Modifier
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val pressed by interactionSource.collectIsPressedAsState()
     val scale by animateFloatAsState(
-        targetValue = if (pressed) 0.89f else 1.0f,
-        animationSpec = spring(dampingRatio = 0.62f, stiffness = 520f),
+        targetValue = if (pressed) 0.90f else 1.0f,
+        animationSpec = spring(dampingRatio = 0.65f, stiffness = 560f),
         label = "keypad_scale"
     )
     val style = LocalDotDialStyle.current
@@ -400,7 +410,7 @@ fun DotKeypadButton(
                 scaleY = scale
             }
             .minimumInteractiveComponentSize()
-            .size(70.dp)
+            .size(size)
             .clip(CircleShape)
             .background(bgColor)
             .border(
@@ -420,13 +430,19 @@ fun DotKeypadButton(
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text(
                 text = digit,
-                style = MaterialTheme.typography.displayMedium.copy(fontSize = 26.sp, lineHeight = 28.sp),
+                style = MaterialTheme.typography.displayMedium.copy(
+                    fontSize = if (size < 60.dp) 21.sp else 26.sp,
+                    lineHeight = if (size < 60.dp) 23.sp else 28.sp
+                ),
                 color = MaterialTheme.colorScheme.onSurface
             )
             if (letters.isNotEmpty()) {
                 Text(
                     text = letters,
-                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp, letterSpacing = 1.2.sp),
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontSize = if (size < 60.dp) 8.sp else 9.sp,
+                        letterSpacing = 1.1.sp
+                    ),
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
@@ -663,7 +679,7 @@ fun SectionHeaderRow(
     ) {
         Column(modifier = Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                PulsingDotIndicator(size = 8.dp)
+                PulsingDotIndicator(size = 8.dp, active = false)
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
                     text = title,

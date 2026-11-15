@@ -58,7 +58,8 @@ data class CallSessionState(
     val callStartedAtMs: Long = 0L,
     val isSystemTelecomCall: Boolean = false,
     val lastDirection: CallDirection = CallDirection.OUTGOING,
-    val miniNotepadText: String = ""
+    val miniNotepadText: String = "",
+    val dtmfDigits: String = ""
 )
 
 object CallSessionBridge {
@@ -264,6 +265,27 @@ object CallSessionBridge {
 
     fun updateMiniNotepad(notes: String) {
         _session.update { it.copy(miniNotepadText = notes) }
+    }
+
+    fun sendInCallDtmf(digit: String) {
+        val ch = digit.firstOrNull() ?: return
+        runCatching {
+            activeSystemCall?.stopDtmfTone()
+            activeSystemCall?.playDtmfTone(ch)
+        }
+        _session.update { state ->
+            state.copy(dtmfDigits = (state.dtmfDigits + ch).takeLast(32))
+        }
+    }
+
+    fun stopSystemDtmfTone() {
+        runCatching {
+            activeSystemCall?.stopDtmfTone()
+        }
+    }
+
+    fun clearInCallDtmfDigits() {
+        _session.update { it.copy(dtmfDigits = "") }
     }
 
     fun enrichWithContact(

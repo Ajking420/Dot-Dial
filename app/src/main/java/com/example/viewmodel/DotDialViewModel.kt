@@ -73,6 +73,7 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
     private val audioRoutes = container.audioRouteManager
     private val ringtonePlayer = container.ringtonePlayer
     private val backupManager = container.backupManager
+    private var dtmfStopJob: Job? = null
 
     private val _dialerQuery = MutableStateFlow("")
     val dialerQuery: StateFlow<String> = _dialerQuery.asStateFlow()
@@ -725,6 +726,25 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
 
     fun updateCallNotes(notes: String) {
         CallSessionBridge.updateMiniNotepad(notes)
+    }
+
+    fun sendInCallDtmf(digit: String) {
+        vibEngine.pulseKeypadTick()
+        val toneStyle = settings.value.dialpadSoundStyle.let {
+            if (it == DialpadSoundStyle.OFF) DialpadSoundStyle.CLASSIC_DTMF else it
+        }
+        uiSounds.playDialTone(digit, toneStyle)
+        CallSessionBridge.sendInCallDtmf(digit)
+        dtmfStopJob?.cancel()
+        dtmfStopJob = viewModelScope.launch {
+            delay(150L)
+            CallSessionBridge.stopSystemDtmfTone()
+        }
+    }
+
+    fun clearInCallDtmf() {
+        playUiClick()
+        CallSessionBridge.clearInCallDtmfDigits()
     }
 
     fun summarizeRecording(recordingId: Long, customTranscript: String? = null) {

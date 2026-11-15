@@ -15,10 +15,12 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
@@ -104,10 +106,13 @@ import com.example.ui.screens.IncomingFloatingTopBanner
 import com.example.ui.screens.SettingsScreen
 import com.example.ui.screens.StatusBarCallPill
 import com.example.ui.screens.VaultScreen
+import com.example.data.preferences.DialerSettings
 import com.example.ui.theme.DotDialTheme
 import com.example.viewmodel.AppRoute
 import com.example.viewmodel.DotDialViewModel
 import com.example.widget.DotDialContactWidgetProvider
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -199,31 +204,13 @@ private fun DotDialAppRoot(
 ) {
     val context = LocalContext.current
     val settings by viewModel.settings.collectAsStateWithLifecycle()
-    val contacts by viewModel.filteredContacts.collectAsStateWithLifecycle()
-    val allContacts by viewModel.contacts.collectAsStateWithLifecycle()
-    val callLogs by viewModel.callLogs.collectAsStateWithLifecycle()
-    val filteredHistory by viewModel.filteredHistory.collectAsStateWithLifecycle()
-    val historyFilter by viewModel.historyFilter.collectAsStateWithLifecycle()
-    val recordings by viewModel.recordings.collectAsStateWithLifecycle()
-    val vibrationPatterns by viewModel.vibrationPatterns.collectAsStateWithLifecycle()
-    val spamRules by viewModel.spamRules.collectAsStateWithLifecycle()
-    val predictiveMatches by viewModel.predictiveMatches.collectAsStateWithLifecycle()
-    val dialerQuery by viewModel.dialerQuery.collectAsStateWithLifecycle()
-    val isDialpadVisible by viewModel.isDialpadVisible.collectAsStateWithLifecycle()
-    val contactSearch by viewModel.contactSearchQuery.collectAsStateWithLifecycle()
-    val analyticsPeriod by viewModel.analyticsPeriod.collectAsStateWithLifecycle()
-    val analyticsSummary by viewModel.analyticsSummary.collectAsStateWithLifecycle()
-    val callSession by viewModel.callSession.collectAsStateWithLifecycle()
-    val voiceState by viewModel.voiceState.collectAsStateWithLifecycle()
-    val playingRecordingId by viewModel.playingRecordingId.collectAsStateWithLifecycle()
-    val aiCommandState by viewModel.aiCommandState.collectAsStateWithLifecycle()
-    val summaryState by viewModel.summaryState.collectAsStateWithLifecycle()
-    val spamCheckState by viewModel.spamCheckState.collectAsStateWithLifecycle()
     val statusMessage by viewModel.statusMessage.collectAsStateWithLifecycle()
     val navRequest by viewModel.navigationRequest.collectAsStateWithLifecycle()
-    val isVaultUnlocked by viewModel.isVaultUnlocked.collectAsStateWithLifecycle()
-    val isDefaultDialer by viewModel.isDefaultDialer.collectAsStateWithLifecycle()
-    val discoveredGoogleAccounts by viewModel.discoveredGoogleAccounts.collectAsStateWithLifecycle()
+    val isCallIdle by remember(viewModel) {
+        viewModel.callSession
+            .map { it.lifecycle == CallLifecycleState.IDLE }
+            .distinctUntilChanged()
+    }.collectAsStateWithLifecycle(initialValue = true)
 
     var showAiSheet by remember { mutableStateOf(false) }
     var supportedRefreshRates by remember { mutableStateOf(listOf(60, 90, 120)) }
@@ -325,16 +312,6 @@ private fun DotDialAppRoot(
         )
     }
 
-    val isFullCallVisible = callSession.lifecycle != CallLifecycleState.IDLE &&
-        callSession.displayMode == CallDisplayMode.FULL_SCREEN
-    val isCompactIncomingBannerVisible = callSession.lifecycle == CallLifecycleState.INCOMING_RINGING &&
-        callSession.displayMode == CallDisplayMode.COMPACT_BANNER
-    val isStatusBarPillVisible =
-        (callSession.lifecycle == CallLifecycleState.ACTIVE &&
-            callSession.displayMode == CallDisplayMode.STATUS_BAR_PILL) ||
-            (callSession.lifecycle == CallLifecycleState.INCOMING_RINGING &&
-                callSession.displayMode == CallDisplayMode.RINGING_MUTED_STATUS)
-
     val pinWidgetAction: () -> Unit = {
         val requested = DotDialContactWidgetProvider.requestPinWidget(context)
         viewModel.showMessage(
@@ -402,7 +379,7 @@ private fun DotDialAppRoot(
                         contentWindowInsets = WindowInsets.safeDrawing,
                         snackbarHost = { SnackbarHost(snackbarHostState) },
                         floatingActionButton = {
-                            if (callSession.lifecycle == CallLifecycleState.IDLE) {
+                            if (isCallIdle) {
                                 SmallFloatingActionButton(
                                     onClick = {
                                         viewModel.playUiClick()
@@ -442,13 +419,37 @@ private fun DotDialAppRoot(
                             NavHost(
                                 navController = navController,
                                 startDestination = AppRoute.Dialer,
-                                enterTransition = { fadeIn(tween(180)) },
-                                exitTransition = { fadeOut(tween(140)) },
+                                enterTransition = {
+                                    fadeIn(tween(210, easing = FastOutSlowInEasing)) +
+                                        scaleIn(
+                                            initialScale = 0.975f,
+                                            animationSpec = tween(210, easing = FastOutSlowInEasing)
+                                        )
+                                },
+                                exitTransition = {
+                                    fadeOut(tween(150, easing = FastOutSlowInEasing))
+                                },
+                                popEnterTransition = {
+                                    fadeIn(tween(210, easing = FastOutSlowInEasing)) +
+                                        scaleIn(
+                                            initialScale = 0.975f,
+                                            animationSpec = tween(210, easing = FastOutSlowInEasing)
+                                        )
+                                },
+                                popExitTransition = {
+                                    fadeOut(tween(150, easing = FastOutSlowInEasing))
+                                },
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .widthIn(max = 680.dp)
                             ) {
                                 composable<AppRoute.Dialer> {
+                                    val dialerQuery by viewModel.dialerQuery.collectAsStateWithLifecycle()
+                                    val isDialpadVisible by viewModel.isDialpadVisible.collectAsStateWithLifecycle()
+                                    val predictiveMatches by viewModel.predictiveMatches.collectAsStateWithLifecycle()
+                                    val callLogs by viewModel.callLogs.collectAsStateWithLifecycle()
+                                    val allContacts by viewModel.contacts.collectAsStateWithLifecycle()
+                                    val isDefaultDialer by viewModel.isDefaultDialer.collectAsStateWithLifecycle()
                                     DialerScreen(
                                         dialerQuery = dialerQuery,
                                         isDialpadVisible = isDialpadVisible,
@@ -490,6 +491,9 @@ private fun DotDialAppRoot(
                                 }
 
                                 composable<AppRoute.History> {
+                                    val filteredHistory by viewModel.filteredHistory.collectAsStateWithLifecycle()
+                                    val allContacts by viewModel.contacts.collectAsStateWithLifecycle()
+                                    val historyFilter by viewModel.historyFilter.collectAsStateWithLifecycle()
                                     HistoryScreen(
                                         logs = filteredHistory,
                                         contacts = allContacts,
@@ -509,6 +513,10 @@ private fun DotDialAppRoot(
                                 }
 
                                 composable<AppRoute.Contacts> {
+                                    val contacts by viewModel.filteredContacts.collectAsStateWithLifecycle()
+                                    val contactSearch by viewModel.contactSearchQuery.collectAsStateWithLifecycle()
+                                    val vibrationPatterns by viewModel.vibrationPatterns.collectAsStateWithLifecycle()
+                                    val discoveredGoogleAccounts by viewModel.discoveredGoogleAccounts.collectAsStateWithLifecycle()
                                     ContactsScreen(
                                         contacts = contacts,
                                         searchQuery = contactSearch,
@@ -557,6 +565,10 @@ private fun DotDialAppRoot(
                                 }
 
                                 composable<AppRoute.Vault> {
+                                    val recordings by viewModel.recordings.collectAsStateWithLifecycle()
+                                    val isVaultUnlocked by viewModel.isVaultUnlocked.collectAsStateWithLifecycle()
+                                    val playingRecordingId by viewModel.playingRecordingId.collectAsStateWithLifecycle()
+                                    val summaryState by viewModel.summaryState.collectAsStateWithLifecycle()
                                     VaultScreen(
                                         recordings = recordings,
                                         vaultPinSet = settings.vaultPin.isNotBlank(),
@@ -572,6 +584,10 @@ private fun DotDialAppRoot(
                                 }
 
                                 composable<AppRoute.Analytics> {
+                                    val analyticsSummary by viewModel.analyticsSummary.collectAsStateWithLifecycle()
+                                    val analyticsPeriod by viewModel.analyticsPeriod.collectAsStateWithLifecycle()
+                                    val spamRules by viewModel.spamRules.collectAsStateWithLifecycle()
+                                    val spamCheckState by viewModel.spamCheckState.collectAsStateWithLifecycle()
                                     AnalyticsScreen(
                                         analytics = analyticsSummary,
                                         selectedPeriod = analyticsPeriod,
@@ -588,6 +604,7 @@ private fun DotDialAppRoot(
                                 }
 
                                 composable<AppRoute.Settings> {
+                                    val vibrationPatterns by viewModel.vibrationPatterns.collectAsStateWithLifecycle()
                                     SettingsScreen(
                                         settings = settings,
                                         supportedRefreshRates = supportedRefreshRates,
@@ -639,73 +656,14 @@ private fun DotDialAppRoot(
                     }
                 }
 
-                // Compact Top Floating Incoming Popup (swipe up to mute, accept -> status bar pill)
-                AnimatedVisibility(
-                    visible = isCompactIncomingBannerVisible,
-                    enter = fadeIn(tween(180)) + slideInVertically(
-                        animationSpec = spring(dampingRatio = 0.78f, stiffness = 420f),
-                        initialOffsetY = { -it }
-                    ),
-                    exit = fadeOut(tween(160)) + slideOutVertically(
-                        animationSpec = tween(180),
-                        targetOffsetY = { -it }
-                    )
-                ) {
-                    IncomingFloatingTopBanner(
-                        session = callSession,
-                        onAnswerToStatusBar = { viewModel.answerActiveCall(toStatusBar = true) },
-                        onReject = viewModel::endActiveCall,
-                        onSwipeUpMute = viewModel::swipeUpMuteIncomingCall,
-                        onExpandFullScreen = viewModel::openFullCallScreen
-                    )
-                }
-
-                // Status Bar Call Pill (for accepted call timer OR muted incoming icon until ring stops)
-                AnimatedVisibility(
-                    visible = isStatusBarPillVisible,
-                    enter = fadeIn(tween(180)) + slideInVertically(initialOffsetY = { -it }),
-                    exit = fadeOut(tween(150)) + slideOutVertically(targetOffsetY = { -it })
-                ) {
-                    StatusBarCallPill(
-                        session = callSession,
-                        onExpandFullScreen = viewModel::openFullCallScreen,
-                        onToggleSpeaker = viewModel::toggleSpeaker,
-                        onEndCall = viewModel::endActiveCall
-                    )
-                }
-
-                // Full-screen Active / Incoming Caller Studio Overlay
-                BackHandler(
-                    enabled = isFullCallVisible && callSession.lifecycle == CallLifecycleState.ACTIVE
-                ) {
-                    viewModel.collapseCallToStatusBar()
-                }
-                AnimatedVisibility(
-                    visible = isFullCallVisible,
-                    enter = fadeIn(tween(200)) + slideInVertically(
-                        animationSpec = spring(dampingRatio = 0.82f, stiffness = 380f),
-                        initialOffsetY = { it / 5 }
-                    ),
-                    exit = fadeOut(tween(180)) + slideOutVertically(targetOffsetY = { it / 5 })
-                ) {
-                    ActiveCallOverlay(
-                        session = callSession,
-                        voiceState = voiceState,
-                        redTintStrength = settings.videoRedTintStrength,
-                        voiceControlEnabled = settings.voiceCommandControlEnabled,
-                        silentRecording = settings.silentCallRecording,
-                        onAnswerCall = { viewModel.answerActiveCall(toStatusBar = false) },
-                        onEndCall = viewModel::endActiveCall,
-                        onCollapseToStatusBar = viewModel::collapseCallToStatusBar,
-                        onToggleMute = viewModel::toggleMute,
-                        onCycleAudioRoute = viewModel::cycleCallAudioRoute,
-                        onToggleRecord = viewModel::toggleCallRecording,
-                        onSimulateVoicePhrase = viewModel::executeAiOrVoiceCommand,
-                        onUpdateNotes = viewModel::updateCallNotes
-                    )
-                }
+                CallOverlaysHost(
+                    viewModel = viewModel,
+                    settings = settings
+                )
 
                 if (showAiSheet) {
+                    val aiCommandState by viewModel.aiCommandState.collectAsStateWithLifecycle()
+                    val voiceState by viewModel.voiceState.collectAsStateWithLifecycle()
                     AiCommandBottomSheet(
                         aiState = aiCommandState,
                         voiceState = voiceState,
@@ -719,6 +677,95 @@ private fun DotDialAppRoot(
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun CallOverlaysHost(
+    viewModel: DotDialViewModel,
+    settings: DialerSettings
+) {
+    val callSession by viewModel.callSession.collectAsStateWithLifecycle()
+    val voiceState by viewModel.voiceState.collectAsStateWithLifecycle()
+
+    val isFullCallVisible = callSession.lifecycle != CallLifecycleState.IDLE &&
+        callSession.displayMode == CallDisplayMode.FULL_SCREEN
+    val isCompactIncomingBannerVisible = callSession.lifecycle == CallLifecycleState.INCOMING_RINGING &&
+        callSession.displayMode == CallDisplayMode.COMPACT_BANNER
+    val isStatusBarPillVisible =
+        (callSession.lifecycle == CallLifecycleState.ACTIVE &&
+            callSession.displayMode == CallDisplayMode.STATUS_BAR_PILL) ||
+            (callSession.lifecycle == CallLifecycleState.INCOMING_RINGING &&
+                callSession.displayMode == CallDisplayMode.RINGING_MUTED_STATUS)
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        // Compact Top Floating Incoming Popup (swipe up to mute, accept -> status bar pill)
+        AnimatedVisibility(
+            visible = isCompactIncomingBannerVisible,
+            enter = fadeIn(tween(180)) + slideInVertically(
+                animationSpec = spring(dampingRatio = 0.78f, stiffness = 420f),
+                initialOffsetY = { -it }
+            ),
+            exit = fadeOut(tween(160)) + slideOutVertically(
+                animationSpec = tween(180),
+                targetOffsetY = { -it }
+            )
+        ) {
+            IncomingFloatingTopBanner(
+                session = callSession,
+                onAnswerToStatusBar = { viewModel.answerActiveCall(toStatusBar = true) },
+                onReject = viewModel::endActiveCall,
+                onSwipeUpMute = viewModel::swipeUpMuteIncomingCall,
+                onExpandFullScreen = viewModel::openFullCallScreen
+            )
+        }
+
+        // Status Bar Call Pill (for accepted call timer OR muted incoming icon until ring stops)
+        AnimatedVisibility(
+            visible = isStatusBarPillVisible,
+            enter = fadeIn(tween(180)) + slideInVertically(initialOffsetY = { -it }),
+            exit = fadeOut(tween(150)) + slideOutVertically(targetOffsetY = { -it })
+        ) {
+            StatusBarCallPill(
+                session = callSession,
+                onExpandFullScreen = viewModel::openFullCallScreen,
+                onToggleSpeaker = viewModel::toggleSpeaker,
+                onEndCall = viewModel::endActiveCall
+            )
+        }
+
+        // Full-screen Active / Incoming Caller Studio Overlay
+        BackHandler(
+            enabled = isFullCallVisible && callSession.lifecycle == CallLifecycleState.ACTIVE
+        ) {
+            viewModel.collapseCallToStatusBar()
+        }
+        AnimatedVisibility(
+            visible = isFullCallVisible,
+            enter = fadeIn(tween(200)) + slideInVertically(
+                animationSpec = spring(dampingRatio = 0.82f, stiffness = 380f),
+                initialOffsetY = { it / 5 }
+            ),
+            exit = fadeOut(tween(180)) + slideOutVertically(targetOffsetY = { it / 5 })
+        ) {
+            ActiveCallOverlay(
+                session = callSession,
+                voiceState = voiceState,
+                redTintStrength = settings.videoRedTintStrength,
+                voiceControlEnabled = settings.voiceCommandControlEnabled,
+                silentRecording = settings.silentCallRecording,
+                onAnswerCall = { viewModel.answerActiveCall(toStatusBar = false) },
+                onEndCall = viewModel::endActiveCall,
+                onCollapseToStatusBar = viewModel::collapseCallToStatusBar,
+                onToggleMute = viewModel::toggleMute,
+                onCycleAudioRoute = viewModel::cycleCallAudioRoute,
+                onToggleRecord = viewModel::toggleCallRecording,
+                onSimulateVoicePhrase = viewModel::executeAiOrVoiceCommand,
+                onUpdateNotes = viewModel::updateCallNotes,
+                onSendDtmfDigit = viewModel::sendInCallDtmf,
+                onClearDtmfDigits = viewModel::clearInCallDtmf
+            )
         }
     }
 }
@@ -751,11 +798,11 @@ private fun FloatingCompactBottomBar(
                 .fillMaxWidth()
                 .widthIn(max = 560.dp),
             shape = RoundedCornerShape(26.dp),
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.96f),
+            color = MaterialTheme.colorScheme.surfaceVariant,
             contentColor = MaterialTheme.colorScheme.onSurface,
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-            tonalElevation = 6.dp,
-            shadowElevation = 10.dp
+            tonalElevation = 0.dp,
+            shadowElevation = 0.dp
         ) {
             Row(
                 modifier = Modifier

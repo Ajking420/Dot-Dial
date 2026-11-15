@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -180,6 +181,8 @@ fun ContactsScreen(
     val patternNameById = remember(vibrationPatterns) {
         vibrationPatterns.associate { it.id to it.name }
     }
+    val listState = rememberLazyListState()
+    val favRowState = rememberLazyListState()
     val refreshedDetail = detailContact?.let { cur ->
         contacts.firstOrNull { it.id == cur.id } ?: cur
     }
@@ -275,7 +278,10 @@ fun ContactsScreen(
                 color = MaterialTheme.colorScheme.primary
             )
             Spacer(modifier = Modifier.height(6.dp))
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            LazyRow(
+                state = favRowState,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
                 items(
                     items = favorites,
                     key = { "fav_${it.id}" },
@@ -317,6 +323,7 @@ fun ContactsScreen(
         Spacer(modifier = Modifier.height(10.dp))
 
         LazyColumn(
+            state = listState,
             modifier = Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(10.dp),
             contentPadding = PaddingValues(bottom = 84.dp)
@@ -352,7 +359,8 @@ fun ContactsScreen(
                 ) { contact ->
                     val patternName = patternNameById[contact.vibrationPatternId] ?: "GLYPH PULSE"
                     val extraCount = remember(contact.additionalNumbersJson) {
-                        ContactNumbersCodec.decode(contact.additionalNumbersJson).size
+                        if (contact.additionalNumbersJson.length <= 2) 0
+                        else ContactNumbersCodec.decode(contact.additionalNumbersJson).size
                     }
                     NothingSurfaceCard(
                         modifier = Modifier

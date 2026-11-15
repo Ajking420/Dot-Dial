@@ -2,6 +2,14 @@ package com.example.data.system
 
 import com.example.data.local.ContactEntity
 
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+private val shortDateFormatter = object : ThreadLocal<SimpleDateFormat>() {
+    override fun initialValue(): SimpleDateFormat = SimpleDateFormat("MMM d", Locale.getDefault())
+}
+
 object T9Utils {
     private val charToDigitMap = mapOf(
         'a' to '2', 'b' to '2', 'c' to '2',
@@ -71,6 +79,18 @@ object T9Utils {
             "%02d:%02d:%02d".format(hrs, mins, secs)
         } else {
             "%02d:%02d".format(mins, secs)
+        }
+    }
+
+    fun formatRelativeTimestamp(timestampMs: Long, nowMs: Long): String {
+        val diffMs = (nowMs - timestampMs).coerceAtLeast(0L)
+        val mins = diffMs / 60_000L
+        return when {
+            mins < 1L -> "Just now"
+            mins < 60L -> "${mins}m ago"
+            mins < 1440L -> "${mins / 60L}h ago"
+            mins < 2880L -> "Yesterday"
+            else -> shortDateFormatter.get()?.format(Date(timestampMs)).orEmpty()
         }
     }
 }

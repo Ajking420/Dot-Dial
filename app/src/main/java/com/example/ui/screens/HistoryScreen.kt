@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DeleteSweep
@@ -72,6 +73,8 @@ fun HistoryScreen(
     modifier: Modifier = Modifier
 ) {
     var showBackupBar by remember { mutableStateOf(false) }
+    val listState = rememberLazyListState()
+    val nowMs = remember(logs.size) { System.currentTimeMillis() }
     val contactByNumber = remember(contacts) {
         T9Utils.buildNumberLookup(contacts)
     }
@@ -240,6 +243,7 @@ fun HistoryScreen(
         Spacer(modifier = Modifier.height(10.dp))
 
         LazyColumn(
+            state = listState,
             modifier = Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(8.dp),
             contentPadding = PaddingValues(bottom = 84.dp)
@@ -283,6 +287,7 @@ fun HistoryScreen(
                     RecentCallRow(
                         log = log,
                         photoUri = matchedContact?.photoUri,
+                        nowMs = nowMs,
                         onCall = { onCallNumber(log.phoneNumber, matchedContact) },
                         onDelete = { onDeleteLog(log.id) }
                     )
