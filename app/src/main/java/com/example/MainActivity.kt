@@ -1,0 +1,806 @@
+package com.example
+
+import android.Manifest
+import android.app.role.RoleManager
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
+import android.os.Bundle
+import android.telecom.TelecomManager
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Analytics
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Contacts
+import androidx.compose.material.icons.filled.Dialpad
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.outlined.Analytics
+import androidx.compose.material.icons.outlined.Contacts
+import androidx.compose.material.icons.outlined.Dialpad
+import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.Lock
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationRail
+import androidx.compose.material3.NavigationRailItem
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SmallFloatingActionButton
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.minimumInteractiveComponentSize
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation.NavDestination
+import androidx.navigation.NavDestination.Companion.hasRoute
+import androidx.navigation.NavGraph.Companion.findStartDestination
+import androidx.navigation.NavHostController
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
+import androidx.navigation.compose.rememberNavController
+import com.example.data.ai.configureAppCheck
+import com.example.telecom.CallDisplayMode
+import com.example.telecom.CallLifecycleState
+import com.example.ui.components.DotMatrixCanvasBackdrop
+import com.example.ui.screens.ActiveCallOverlay
+import com.example.ui.screens.AiCommandBottomSheet
+import com.example.ui.screens.AnalyticsScreen
+import com.example.ui.screens.ContactsScreen
+import com.example.ui.screens.DialerScreen
+import com.example.ui.screens.HistoryScreen
+import com.example.ui.screens.IncomingFloatingTopBanner
+import com.example.ui.screens.SettingsScreen
+import com.example.ui.screens.StatusBarCallPill
+import com.example.ui.screens.VaultScreen
+import com.example.ui.theme.DotDialTheme
+import com.example.viewmodel.AppRoute
+import com.example.viewmodel.DotDialViewModel
+import com.example.widget.DotDialContactWidgetProvider
+import kotlin.math.abs
+import kotlin.math.roundToInt
+
+class MainActivity : ComponentActivity() {
+    private val launchIntentState = mutableStateOf<Intent?>(null)
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        // STEP 1: Configure App Check with launch intent before any UI or ViewModels
+        configureAppCheck(this, intent)
+
+        // STEP 2: Enable Edge-to-Edge and render Compose UI
+        enableEdgeToEdge()
+        launchIntentState.value = intent
+
+        setContent {
+            val viewModel: DotDialViewModel = viewModel()
+            DotDialAppRoot(
+                viewModel = viewModel,
+                launchIntent = launchIntentState.value,
+                onApplyDisplayFps = ::applyDisplayFpsSettings
+            )
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        launchIntentState.value = intent
+    }
+
+    private fun applyDisplayFpsSettings(
+        targetFps: Int,
+        adaptiveRefreshRate: Boolean
+    ): List<Int> {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+            window.setFrameRateBoostOnTouchEnabled(true)
+            window.isFrameRatePowerSavingsBalanced = adaptiveRefreshRate
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val display = window?.decorView?.display ?: return emptyList()
+            val currentMode = display.mode
+            val compatibleModes = display.supportedModes.filter {
+                it.physicalWidth == currentMode.physicalWidth &&
+                    it.physicalHeight == currentMode.physicalHeight
+            }
+            val supportedRates = compatibleModes
+                .map { it.refreshRate.roundToInt() }
+                .distinct()
+                .sorted()
+
+            val desiredModeId = if (targetFps <= 0) {
+                0
+            } else {
+                compatibleModes.minByOrNull {
+                    abs(it.refreshRate - targetFps.toFloat())
+                }?.modeId ?: 0
+            }
+
+            if (window.attributes.preferredDisplayModeId != desiredModeId) {
+                val attrs = window.attributes
+                attrs.preferredDisplayModeId = desiredModeId
+                window.attributes = attrs
+            }
+            return supportedRates
+        }
+        return listOf(60)
+    }
+}
+
+private fun extractDialNumber(intent: Intent?): String? {
+    val data = intent?.data ?: return null
+    return if (data.scheme == "tel") data.schemeSpecificPart else null
+}
+
+private data class NavTabItem(
+    val route: AppRoute,
+    val labelRes: Int,
+    val selectedIcon: ImageVector,
+    val unselectedIcon: ImageVector,
+    val tag: String
+)
+
+@Composable
+private fun DotDialAppRoot(
+    viewModel: DotDialViewModel,
+    launchIntent: Intent?,
+    onApplyDisplayFps: (Int, Boolean) -> List<Int>
+) {
+    val context = LocalContext.current
+    val settings by viewModel.settings.collectAsStateWithLifecycle()
+    val contacts by viewModel.filteredContacts.collectAsStateWithLifecycle()
+    val allContacts by viewModel.contacts.collectAsStateWithLifecycle()
+    val callLogs by viewModel.callLogs.collectAsStateWithLifecycle()
+    val filteredHistory by viewModel.filteredHistory.collectAsStateWithLifecycle()
+    val historyFilter by viewModel.historyFilter.collectAsStateWithLifecycle()
+    val recordings by viewModel.recordings.collectAsStateWithLifecycle()
+    val vibrationPatterns by viewModel.vibrationPatterns.collectAsStateWithLifecycle()
+    val spamRules by viewModel.spamRules.collectAsStateWithLifecycle()
+    val predictiveMatches by viewModel.predictiveMatches.collectAsStateWithLifecycle()
+    val dialerQuery by viewModel.dialerQuery.collectAsStateWithLifecycle()
+    val isDialpadVisible by viewModel.isDialpadVisible.collectAsStateWithLifecycle()
+    val contactSearch by viewModel.contactSearchQuery.collectAsStateWithLifecycle()
+    val analyticsPeriod by viewModel.analyticsPeriod.collectAsStateWithLifecycle()
+    val analyticsSummary by viewModel.analyticsSummary.collectAsStateWithLifecycle()
+    val callSession by viewModel.callSession.collectAsStateWithLifecycle()
+    val voiceState by viewModel.voiceState.collectAsStateWithLifecycle()
+    val playingRecordingId by viewModel.playingRecordingId.collectAsStateWithLifecycle()
+    val aiCommandState by viewModel.aiCommandState.collectAsStateWithLifecycle()
+    val summaryState by viewModel.summaryState.collectAsStateWithLifecycle()
+    val spamCheckState by viewModel.spamCheckState.collectAsStateWithLifecycle()
+    val statusMessage by viewModel.statusMessage.collectAsStateWithLifecycle()
+    val navRequest by viewModel.navigationRequest.collectAsStateWithLifecycle()
+    val isVaultUnlocked by viewModel.isVaultUnlocked.collectAsStateWithLifecycle()
+    val isDefaultDialer by viewModel.isDefaultDialer.collectAsStateWithLifecycle()
+    val discoveredGoogleAccounts by viewModel.discoveredGoogleAccounts.collectAsStateWithLifecycle()
+
+    var showAiSheet by remember { mutableStateOf(false) }
+    var supportedRefreshRates by remember { mutableStateOf(listOf(60, 90, 120)) }
+
+    LaunchedEffect(settings.preferredFps, settings.adaptiveRefreshRate) {
+        val detected = onApplyDisplayFps(settings.preferredFps, settings.adaptiveRefreshRate)
+        if (detected.isNotEmpty()) {
+            supportedRefreshRates = detected
+        }
+    }
+
+    val requiredPermissions = remember {
+        buildList {
+            add(Manifest.permission.CALL_PHONE)
+            add(Manifest.permission.READ_CONTACTS)
+            add(Manifest.permission.WRITE_CONTACTS)
+            add(Manifest.permission.READ_CALL_LOG)
+            add(Manifest.permission.RECORD_AUDIO)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                add(Manifest.permission.BLUETOOTH_CONNECT)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                add(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }.toTypedArray()
+    }
+
+    var hasPermissions by remember {
+        mutableStateOf(
+            requiredPermissions.all { perm ->
+                ContextCompat.checkSelfPermission(context, perm) == PackageManager.PERMISSION_GRANTED
+            }
+        )
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { results ->
+        hasPermissions = results.values.all { it }
+        viewModel.syncDeviceContactsAndLogs()
+    }
+
+    val roleLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { }
+
+    val snackbarHostState = remember { SnackbarHostState() }
+    LaunchedEffect(statusMessage) {
+        val msg = statusMessage
+        if (!msg.isNullOrBlank()) {
+            snackbarHostState.showSnackbar(msg)
+            viewModel.clearStatusMessage()
+        }
+    }
+
+    val navController = rememberNavController()
+    LaunchedEffect(launchIntent) {
+        val activeIntent = launchIntent ?: return@LaunchedEffect
+        val openContacts = activeIntent.getBooleanExtra(
+            DotDialContactWidgetProvider.EXTRA_OPEN_CONTACTS,
+            false
+        )
+        if (openContacts) {
+            navigateTab(navController, AppRoute.Contacts)
+            return@LaunchedEffect
+        }
+        val dialNumber = extractDialNumber(activeIntent)
+        if (!dialNumber.isNullOrBlank()) {
+            val callImmediately = activeIntent.getBooleanExtra(
+                DotDialContactWidgetProvider.EXTRA_WIDGET_CALL_NOW,
+                false
+            )
+            if (callImmediately) {
+                viewModel.placeCall(dialNumber)
+            } else {
+                viewModel.clearDialQuery()
+                dialNumber.forEach { ch -> viewModel.appendDialDigit(ch.toString()) }
+            }
+        }
+    }
+
+    LaunchedEffect(navRequest) {
+        val req = navRequest ?: return@LaunchedEffect
+        navigateTab(navController, req.route)
+        viewModel.clearNavigationRequest()
+    }
+
+    val navBackStackEntry by navController.currentBackStackEntryAsState()
+    val currentDestination = navBackStackEntry?.destination
+
+    val tabs = remember {
+        listOf(
+            NavTabItem(AppRoute.Dialer, R.string.nav_dialer, Icons.Filled.Dialpad, Icons.Outlined.Dialpad, "nav_dialer"),
+            NavTabItem(AppRoute.History, R.string.nav_history, Icons.Filled.History, Icons.Outlined.History, "nav_history"),
+            NavTabItem(AppRoute.Contacts, R.string.nav_contacts, Icons.Filled.Contacts, Icons.Outlined.Contacts, "nav_contacts"),
+            NavTabItem(AppRoute.Vault, R.string.nav_vault, Icons.Filled.Lock, Icons.Outlined.Lock, "nav_vault"),
+            NavTabItem(AppRoute.Analytics, R.string.nav_analytics, Icons.Filled.Analytics, Icons.Outlined.Analytics, "nav_analytics"),
+            NavTabItem(AppRoute.Settings, R.string.nav_settings, Icons.Filled.Settings, Icons.Outlined.Settings, "nav_settings")
+        )
+    }
+
+    val isFullCallVisible = callSession.lifecycle != CallLifecycleState.IDLE &&
+        callSession.displayMode == CallDisplayMode.FULL_SCREEN
+    val isCompactIncomingBannerVisible = callSession.lifecycle == CallLifecycleState.INCOMING_RINGING &&
+        callSession.displayMode == CallDisplayMode.COMPACT_BANNER
+    val isStatusBarPillVisible =
+        (callSession.lifecycle == CallLifecycleState.ACTIVE &&
+            callSession.displayMode == CallDisplayMode.STATUS_BAR_PILL) ||
+            (callSession.lifecycle == CallLifecycleState.INCOMING_RINGING &&
+                callSession.displayMode == CallDisplayMode.RINGING_MUTED_STATUS)
+
+    val pinWidgetAction: () -> Unit = {
+        val requested = DotDialContactWidgetProvider.requestPinWidget(context)
+        viewModel.showMessage(
+            if (requested) {
+                "Confirm on your home screen to pin the Contact Widget."
+            } else {
+                "Open your home screen Widgets picker and add Dot Dial Contacts."
+            }
+        )
+    }
+
+    DotDialTheme(
+        preset = settings.themePreset,
+        amoledBlackEnabled = settings.amoledBlackEnabled,
+        dotDensity = if (settings.ultraSmoothMode) minOf(settings.dotDensity, 0.35f) else settings.dotDensity,
+        fontPreset = settings.fontPreset,
+        fontStyleMode = settings.fontStyleMode,
+        fontScale = settings.fontScale,
+        coolJazzGlow = settings.coolJazzGlowEnabled && !settings.ultraSmoothMode,
+        customFontPath = settings.customFontPath,
+        customBgHex = settings.customBgHex,
+        customSurfaceHex = settings.customSurfaceHex,
+        customAccentHex = settings.customAccentHex,
+        customTextHex = settings.customTextHex
+    ) {
+        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+            val useRail = maxWidth >= 600.dp
+
+            Box(modifier = Modifier.fillMaxSize()) {
+                DotMatrixCanvasBackdrop()
+
+                Row(modifier = Modifier.fillMaxSize()) {
+                    if (useRail) {
+                        NavigationRail(
+                            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f)
+                        ) {
+                            tabs.forEach { tab ->
+                                val selected = currentDestination?.hasRoute(tab.route::class) == true
+                                NavigationRailItem(
+                                    selected = selected,
+                                    onClick = {
+                                        viewModel.playUiClick()
+                                        navigateTab(navController, tab.route)
+                                    },
+                                    icon = {
+                                        Icon(
+                                            imageVector = if (selected) tab.selectedIcon else tab.unselectedIcon,
+                                            contentDescription = stringResource(tab.labelRes)
+                                        )
+                                    },
+                                    label = {
+                                        Text(
+                                            text = stringResource(tab.labelRes),
+                                            style = MaterialTheme.typography.labelSmall
+                                        )
+                                    },
+                                    modifier = Modifier.testTag(tab.tag)
+                                )
+                            }
+                        }
+                    }
+
+                    Scaffold(
+                        containerColor = Color.Transparent,
+                        contentWindowInsets = WindowInsets.safeDrawing,
+                        snackbarHost = { SnackbarHost(snackbarHostState) },
+                        floatingActionButton = {
+                            if (callSession.lifecycle == CallLifecycleState.IDLE) {
+                                SmallFloatingActionButton(
+                                    onClick = {
+                                        viewModel.playUiClick()
+                                        showAiSheet = true
+                                    },
+                                    containerColor = MaterialTheme.colorScheme.primary,
+                                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                                    shape = RoundedCornerShape(18.dp),
+                                    modifier = Modifier.testTag("ai_full_control_fab")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.AutoAwesome,
+                                        contentDescription = stringResource(R.string.ai_command_pill)
+                                    )
+                                }
+                            }
+                        },
+                        bottomBar = {
+                            if (!useRail) {
+                                FloatingCompactBottomBar(
+                                    tabs = tabs,
+                                    currentDestination = currentDestination,
+                                    onTabSelected = { route ->
+                                        viewModel.playUiClick()
+                                        navigateTab(navController, route)
+                                    }
+                                )
+                            }
+                        }
+                    ) { innerPadding ->
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(innerPadding),
+                            contentAlignment = Alignment.TopCenter
+                        ) {
+                            NavHost(
+                                navController = navController,
+                                startDestination = AppRoute.Dialer,
+                                enterTransition = { fadeIn(tween(180)) },
+                                exitTransition = { fadeOut(tween(140)) },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .widthIn(max = 680.dp)
+                            ) {
+                                composable<AppRoute.Dialer> {
+                                    DialerScreen(
+                                        dialerQuery = dialerQuery,
+                                        isDialpadVisible = isDialpadVisible,
+                                        predictiveMatches = predictiveMatches,
+                                        recentLogs = callLogs,
+                                        contacts = allContacts,
+                                        isDefaultDialer = isDefaultDialer,
+                                        hasPermissions = hasPermissions,
+                                        onRequestPermissions = {
+                                            permissionLauncher.launch(requiredPermissions)
+                                        },
+                                        onRequestDefaultDialer = {
+                                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                                                val rm = context.getSystemService(RoleManager::class.java)
+                                                if (rm != null && rm.isRoleAvailable(RoleManager.ROLE_DIALER)) {
+                                                    roleLauncher.launch(
+                                                        rm.createRequestRoleIntent(RoleManager.ROLE_DIALER)
+                                                    )
+                                                }
+                                            } else {
+                                                val roleIntent = Intent(TelecomManager.ACTION_CHANGE_DEFAULT_DIALER)
+                                                    .putExtra(
+                                                        TelecomManager.EXTRA_CHANGE_DEFAULT_DIALER_PACKAGE_NAME,
+                                                        context.packageName
+                                                    )
+                                                roleLauncher.launch(roleIntent)
+                                            }
+                                        },
+                                        onToggleDialpad = viewModel::toggleDialpadVisible,
+                                        onDigitPress = viewModel::appendDialDigit,
+                                        onBackspace = viewModel::backspaceDialDigit,
+                                        onClearQuery = viewModel::clearDialQuery,
+                                        onPlaceCall = viewModel::placeCall,
+                                        onSimulateIncoming = { spam ->
+                                            viewModel.simulateIncomingCall(spamTest = spam, compactPopup = true)
+                                        },
+                                        onOpenAiCommand = { showAiSheet = true }
+                                    )
+                                }
+
+                                composable<AppRoute.History> {
+                                    HistoryScreen(
+                                        logs = filteredHistory,
+                                        contacts = allContacts,
+                                        selectedFilter = historyFilter,
+                                        onSelectFilter = viewModel::setHistoryFilter,
+                                        onCallNumber = viewModel::placeCall,
+                                        onDeleteLog = viewModel::deleteCallLog,
+                                        onClearHistory = viewModel::clearCallHistory,
+                                        onExportJsonBackup = viewModel::exportBackupJson,
+                                        onExportContactsVcf = viewModel::exportContactsVcf,
+                                        onRestoreBackupJson = viewModel::restoreBackupJson,
+                                        onOpenDialpadOverlay = {
+                                            viewModel.setDialpadVisible(true)
+                                            navigateTab(navController, AppRoute.Dialer)
+                                        }
+                                    )
+                                }
+
+                                composable<AppRoute.Contacts> {
+                                    ContactsScreen(
+                                        contacts = contacts,
+                                        searchQuery = contactSearch,
+                                        vibrationPatterns = vibrationPatterns,
+                                        googleSyncEnabled = settings.googleSyncEnabled,
+                                        discoveredGoogleAccounts = discoveredGoogleAccounts,
+                                        syncedGoogleAccounts = settings.syncedGoogleAccounts,
+                                        onSearchChange = viewModel::setContactSearchQuery,
+                                        onSyncDeviceContacts = { viewModel.syncDeviceContactsAndLogs(false) },
+                                        onToggleGoogleSync = viewModel::setGoogleSyncEnabled,
+                                        onAddGoogleAccount = viewModel::addGoogleSyncAccount,
+                                        onRemoveGoogleAccount = viewModel::removeGoogleSyncAccount,
+                                        onCallContact = { contact ->
+                                            viewModel.placeCall(contact.phoneNumber, contact)
+                                        },
+                                        onSaveContact = { id, name, phone, company, email, notes, fav, photo, card, video, vibId ->
+                                            viewModel.saveContact(
+                                                existingId = id,
+                                                name = name,
+                                                phoneNumber = phone,
+                                                company = company,
+                                                email = email,
+                                                notes = notes,
+                                                isFavorite = fav,
+                                                photoUri = photo,
+                                                callingCardUri = card,
+                                                videoBackdropUri = video,
+                                                vibrationPatternId = vibId
+                                            )
+                                        },
+                                        onToggleFavorite = viewModel::toggleFavorite,
+                                        onToggleBlocked = viewModel::toggleBlocked,
+                                        onAssignPhoto = viewModel::assignContactPhoto,
+                                        onAssignCallingCard = viewModel::assignContactCallingCard,
+                                        onAssignVideoBackdrop = viewModel::assignContactVideoBackdrop,
+                                        onAssignVibrationPattern = viewModel::assignContactVibrationPattern,
+                                        onDeleteContact = viewModel::deleteContact,
+                                        onPinContactWidget = pinWidgetAction
+                                    )
+                                }
+
+                                composable<AppRoute.Vault> {
+                                    VaultScreen(
+                                        recordings = recordings,
+                                        vaultPinSet = settings.vaultPin.isNotBlank(),
+                                        isUnlocked = isVaultUnlocked,
+                                        playingRecordingId = playingRecordingId,
+                                        summaryState = summaryState,
+                                        onUnlockWithPin = viewModel::unlockVault,
+                                        onLockVault = viewModel::lockVault,
+                                        onTogglePlay = viewModel::toggleRecordingPlayback,
+                                        onSummarizeRecording = viewModel::summarizeRecording,
+                                        onDeleteRecording = viewModel::deleteRecording
+                                    )
+                                }
+
+                                composable<AppRoute.Analytics> {
+                                    AnalyticsScreen(
+                                        analytics = analyticsSummary,
+                                        selectedPeriod = analyticsPeriod,
+                                        spamRules = spamRules,
+                                        spamCheckState = spamCheckState,
+                                        onSelectPeriod = viewModel::setAnalyticsPeriod,
+                                        onAddSpamRule = { pattern, label ->
+                                            viewModel.addSpamRule(pattern, label)
+                                        },
+                                        onToggleSpamRule = viewModel::toggleSpamRule,
+                                        onDeleteSpamRule = viewModel::deleteSpamRule,
+                                        onCheckNumberWithGemini = viewModel::checkNumberWithGemini
+                                    )
+                                }
+
+                                composable<AppRoute.Settings> {
+                                    SettingsScreen(
+                                        settings = settings,
+                                        supportedRefreshRates = supportedRefreshRates,
+                                        vibrationPatterns = vibrationPatterns,
+                                        onSelectTheme = viewModel::setThemePreset,
+                                        onToggleAmoledBlack = viewModel::setAmoledBlack,
+                                        onUpdateCustomColors = viewModel::setCustomThemeColors,
+                                        onDotDensityChange = viewModel::setDotDensity,
+                                        onSelectFontPreset = viewModel::setFontPreset,
+                                        onSelectFontStyle = viewModel::setFontStyleMode,
+                                        onFontScaleChange = viewModel::setFontScale,
+                                        onToggleCoolJazzGlow = viewModel::setCoolJazzGlow,
+                                        onImportCustomFontUri = viewModel::importCustomFontUri,
+                                        onSetPreferredFps = viewModel::setPreferredFps,
+                                        onSetAdaptiveRefreshRate = viewModel::setAdaptiveRefreshRate,
+                                        onSetUltraSmoothMode = viewModel::setUltraSmoothMode,
+                                        onSetUiSounds = viewModel::setUiSoundsEnabled,
+                                        onSetAudioOutputMode = viewModel::setAudioOutputMode,
+                                        onPickCustomRingtone = viewModel::setCustomRingtoneUri,
+                                        onPickDefaultVideo = viewModel::setDefaultVideoBackdrop,
+                                        onRedTintStrengthChange = viewModel::setVideoRedTintStrength,
+                                        onSelectVibrationPattern = viewModel::selectActiveVibrationPattern,
+                                        onTestVibrationPattern = viewModel::testVibrationPattern,
+                                        onSaveCustomVibration = viewModel::saveCustomVibrationPattern,
+                                        onDeleteCustomVibration = viewModel::deleteCustomVibrationPattern,
+                                        onSetAutoRecordMode = viewModel::setAutoRecordMode,
+                                        onSetSilentRecording = viewModel::setSilentCallRecording,
+                                        onSetAutoSummarize = viewModel::setAutoSummarizeEnabled,
+                                        onSetVoiceControl = viewModel::setVoiceCommandControl,
+                                        onSetVaultPin = viewModel::setVaultPin,
+                                        onExportBackupJson = viewModel::exportBackupJson,
+                                        onExportContactsVcf = viewModel::exportContactsVcf,
+                                        onRestoreBackupJson = viewModel::restoreBackupJson,
+                                        onPinContactWidget = pinWidgetAction
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Compact Top Floating Incoming Popup (swipe up to mute, accept -> status bar pill)
+                AnimatedVisibility(
+                    visible = isCompactIncomingBannerVisible,
+                    enter = fadeIn(tween(180)) + slideInVertically(
+                        animationSpec = spring(dampingRatio = 0.78f, stiffness = 420f),
+                        initialOffsetY = { -it }
+                    ),
+                    exit = fadeOut(tween(160)) + slideOutVertically(
+                        animationSpec = tween(180),
+                        targetOffsetY = { -it }
+                    )
+                ) {
+                    IncomingFloatingTopBanner(
+                        session = callSession,
+                        onAnswerToStatusBar = { viewModel.answerActiveCall(toStatusBar = true) },
+                        onReject = viewModel::endActiveCall,
+                        onSwipeUpMute = viewModel::swipeUpMuteIncomingCall,
+                        onExpandFullScreen = viewModel::openFullCallScreen
+                    )
+                }
+
+                // Status Bar Call Pill (for accepted call timer OR muted incoming icon until ring stops)
+                AnimatedVisibility(
+                    visible = isStatusBarPillVisible,
+                    enter = fadeIn(tween(180)) + slideInVertically(initialOffsetY = { -it }),
+                    exit = fadeOut(tween(150)) + slideOutVertically(targetOffsetY = { -it })
+                ) {
+                    StatusBarCallPill(
+                        session = callSession,
+                        onExpandFullScreen = viewModel::openFullCallScreen,
+                        onToggleSpeaker = viewModel::toggleSpeaker,
+                        onEndCall = viewModel::endActiveCall
+                    )
+                }
+
+                // Full-screen Active / Incoming Caller Studio Overlay
+                BackHandler(
+                    enabled = isFullCallVisible && callSession.lifecycle == CallLifecycleState.ACTIVE
+                ) {
+                    viewModel.collapseCallToStatusBar()
+                }
+                AnimatedVisibility(
+                    visible = isFullCallVisible,
+                    enter = fadeIn(tween(200)) + slideInVertically(
+                        animationSpec = spring(dampingRatio = 0.82f, stiffness = 380f),
+                        initialOffsetY = { it / 5 }
+                    ),
+                    exit = fadeOut(tween(180)) + slideOutVertically(targetOffsetY = { it / 5 })
+                ) {
+                    ActiveCallOverlay(
+                        session = callSession,
+                        voiceState = voiceState,
+                        redTintStrength = settings.videoRedTintStrength,
+                        voiceControlEnabled = settings.voiceCommandControlEnabled,
+                        silentRecording = settings.silentCallRecording,
+                        onAnswerCall = { viewModel.answerActiveCall(toStatusBar = false) },
+                        onEndCall = viewModel::endActiveCall,
+                        onCollapseToStatusBar = viewModel::collapseCallToStatusBar,
+                        onToggleMute = viewModel::toggleMute,
+                        onCycleAudioRoute = viewModel::cycleCallAudioRoute,
+                        onToggleRecord = viewModel::toggleCallRecording,
+                        onSimulateVoicePhrase = viewModel::executeAiOrVoiceCommand,
+                        onUpdateNotes = viewModel::updateCallNotes
+                    )
+                }
+
+                if (showAiSheet) {
+                    AiCommandBottomSheet(
+                        aiState = aiCommandState,
+                        voiceState = voiceState,
+                        onDismiss = {
+                            showAiSheet = false
+                            viewModel.resetAiState()
+                        },
+                        onExecuteCommand = viewModel::executeAiOrVoiceCommand,
+                        onStartListening = viewModel::startVoiceControlListening,
+                        onStopListening = viewModel::stopVoiceControlListening
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun navigateTab(navController: NavHostController, route: AppRoute) {
+    navController.navigate(route) {
+        popUpTo(navController.graph.findStartDestination().id) {
+            saveState = true
+        }
+        launchSingleTop = true
+        restoreState = true
+    }
+}
+
+@Composable
+private fun FloatingCompactBottomBar(
+    tabs: List<NavTabItem>,
+    currentDestination: NavDestination?,
+    onTabSelected: (AppRoute) -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .navigationBarsPadding()
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .widthIn(max = 560.dp),
+            shape = RoundedCornerShape(26.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.96f),
+            contentColor = MaterialTheme.colorScheme.onSurface,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+            tonalElevation = 6.dp,
+            shadowElevation = 10.dp
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 6.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                tabs.forEach { tab ->
+                    val selected = currentDestination?.hasRoute(tab.route::class) == true
+                    val pillColor by animateColorAsState(
+                        targetValue = if (selected) {
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+                        } else {
+                            Color.Transparent
+                        },
+                        animationSpec = tween(180),
+                        label = "nav_pill_color"
+                    )
+                    val contentTint by animateColorAsState(
+                        targetValue = if (selected) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        animationSpec = tween(180),
+                        label = "nav_content_tint"
+                    )
+
+                    Surface(
+                        modifier = Modifier
+                            .weight(1f)
+                            .minimumInteractiveComponentSize()
+                            .clip(RoundedCornerShape(20.dp))
+                            .clickable { onTabSelected(tab.route) }
+                            .testTag(tab.tag),
+                        shape = RoundedCornerShape(20.dp),
+                        color = pillColor
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(vertical = 6.dp, horizontal = 2.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (selected) tab.selectedIcon else tab.unselectedIcon,
+                                contentDescription = stringResource(tab.labelRes),
+                                tint = contentTint,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Text(
+                                text = stringResource(tab.labelRes),
+                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.5.sp),
+                                color = contentTint,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

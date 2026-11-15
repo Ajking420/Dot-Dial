@@ -1,0 +1,6 @@
+{
+  "name": "Dot Dial",
+  "description": "Nothing OS inspired dot-matrix dialer for Phone (3a) Lite with predictive T9 dialing, contact management, privacy-focused call recording, custom vibration glyphs, video caller backdrops, real-time spam defense, call analytics, and Gemini AI control.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
