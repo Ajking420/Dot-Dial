@@ -13,6 +13,8 @@ import com.example.data.local.CallLogDao
 import com.example.data.local.CallLogEntity
 import com.example.data.local.ContactDao
 import com.example.data.local.ContactEntity
+import com.example.data.local.ContactNumbersCodec
+import com.example.data.local.ContactPhoneNumber
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -22,6 +24,24 @@ data class SyncResult(
     val importedContacts: Int,
     val importedCallLogs: Int,
     val discoveredGoogleAccounts: List<String>
+)
+
+private data class RawPhoneCandidate(
+    val rawNumber: String,
+    val normalized: String,
+    val label: String,
+    val isPrimary: Boolean,
+    val isMobile: Boolean
+)
+
+private class GroupedSystemContact(
+    val contactId: Long,
+    var name: String,
+    var starred: Boolean,
+    var photoUri: String?,
+    var accountName: String,
+    var accountType: String,
+    val numbers: MutableList<RawPhoneCandidate> = mutableListOf()
 )
 
 class DeviceContactsSync(
@@ -124,9 +144,15 @@ class DeviceContactsSync(
                     ContactsContract.CommonDataKinds.Phone.RAW_CONTACT_ID,
                     ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
                     ContactsContract.CommonDataKinds.Phone.NUMBER,
+                    ContactsContract.CommonDataKinds.Phone.TYPE,
+                    ContactsContract.CommonDataKinds.Phone.LABEL,
+                    ContactsContract.CommonDataKinds.Phone.IS_PRIMARY,
+                    ContactsContract.CommonDataKinds.Phone.IS_SUPER_PRIMARY,
                     ContactsContract.CommonDataKinds.Phone.STARRED,
                     ContactsContract.CommonDataKinds.Phone.PHOTO_URI
                 )
+                val groupedByPerson = linkedMapOf<Long, GroupedSystemContact>()
+
                 context.contentResolver.query(
                     ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
                     projection,
@@ -138,9 +164,12 @@ class DeviceContactsSync(
                     val rawIdx = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.RAW_CONTACT_ID)
                     val nameIdx = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
                     val numIdx = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
+                    val typeIdx = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.TYPE)
+                    val labelIdx = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.LABEL)
+                    val priIdx = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.IS_PRIMARY)
+                    val supPriIdx = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.IS_SUPER_PRIMARY)
                     val starIdx = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.STARRED)
                     val photoIdx = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.PHOTO_URI)
-                    val seenNumbers = mutableSetOf<String>()
 
                     while (cursor.moveToNext()) {
                         val cid = cursor.getLong(cidIdx)
@@ -156,36 +185,123 @@ class DeviceContactsSync(
 
                         val name = cursor.getString(nameIdx)?.trim().orEmpty()
                         val rawNumber = cursor.getString(numIdx)?.trim().orEmpty()
+                        val normalized = T9Utils.normalizePhone(rawNumber)
+                        if (name.isEmpty() || normalized.isEmpty()) continue
+
+                        val phoneType = if (typeIdx >= 0) cursor.getInt(typeIdx) else ContactsContract.CommonDataKinds.Phone.TYPE_MOBILE
+                        val customLabel = if (labelIdx >= 0) cursor.getString(labelIdx) else null
+                        val typeLabel = ContactsContract.CommonDataKinds.Phone.getTypeLabel(
+                            context.resources,
+                            phoneType,
+                            customLabel
+                        ).toString().ifBlank { "Mobile" }
+
+                        val isPrimary = (priIdx >= 0 && cursor.getInt(priIdx) == 1) ||
+                            (supPriIdx >= 0 && cursor.getInt(supPriIdx) == 1)
                         val starred = starIdx >= 0 && cursor.getInt(starIdx) == 1
                         val photoUri = if (photoIdx >= 0) cursor.getString(photoIdx) else null
-                        val normalized = T9Utils.normalizePhone(rawNumber)
 
-                        if (name.isNotEmpty() && normalized.isNotEmpty() && seenNumbers.add(normalized)) {
-                            val existing = contactDao.findByNormalizedNumber(normalized)
-                            if (existing == null) {
-                                contactDao.upsert(
-                                    ContactEntity(
-                                        name = name,
-                                        phoneNumber = rawNumber,
-                                        normalizedNumber = normalized,
-                                        t9Key = T9Utils.toT9Key(name),
-                                        email = emailsByContactId[cid].orEmpty(),
-                                        photoUri = photoUri,
-                                        accountName = accName,
-                                        accountType = accType,
-                                        isFavorite = starred
-                                    )
+                        val group = groupedByPerson.getOrPut(cid) {
+                            GroupedSystemContact(
+                                contactId = cid,
+                                name = name,
+                                starred = starred,
+                                photoUri = photoUri,
+                                accountName = accName,
+                                accountType = accType
+                            )
+                        }
+                        if (starred) group.starred = true
+                        if (group.photoUri.isNullOrBlank() && !photoUri.isNullOrBlank()) {
+                            group.photoUri = photoUri
+                        }
+                        if (group.accountName.isBlank() && accName.isNotBlank()) {
+                            group.accountName = accName
+                            group.accountType = accType
+                        }
+
+                        if (group.numbers.none { it.normalized == normalized }) {
+                            group.numbers.add(
+                                RawPhoneCandidate(
+                                    rawNumber = rawNumber,
+                                    normalized = normalized,
+                                    label = typeLabel,
+                                    isPrimary = isPrimary,
+                                    isMobile = phoneType == ContactsContract.CommonDataKinds.Phone.TYPE_MOBILE
                                 )
-                                contactsCount++
-                            } else if (existing.photoUri == null && photoUri != null) {
-                                contactDao.update(existing.copy(photoUri = photoUri))
+                            )
+                        }
+                    }
+                }
+
+                // Persist 1 ContactEntity per person, collapsing any legacy split rows
+                groupedByPerson.values.forEach { person ->
+                    if (person.numbers.isEmpty()) return@forEach
+                    val sysKey = "cid_${person.contactId}"
+                    val primary = person.numbers.firstOrNull { it.isPrimary }
+                        ?: person.numbers.firstOrNull { it.isMobile }
+                        ?: person.numbers.first()
+
+                    val extras = person.numbers
+                        .filter { it.normalized != primary.normalized }
+                        .map { ContactPhoneNumber(number = it.rawNumber, label = it.label) }
+                    val extrasJson = ContactNumbersCodec.encode(extras)
+
+                    val existingByKey = contactDao.findBySystemContactKey(sysKey)
+                    val matchingExistingRows = person.numbers.mapNotNull { cand ->
+                        contactDao.findByNormalizedNumber(cand.normalized)
+                    }
+                    val keeper = existingByKey ?: matchingExistingRows.firstOrNull()
+
+                    if (keeper == null) {
+                        contactDao.upsert(
+                            ContactEntity(
+                                name = person.name,
+                                phoneNumber = primary.rawNumber,
+                                normalizedNumber = primary.normalized,
+                                t9Key = T9Utils.toT9Key(person.name),
+                                email = emailsByContactId[person.contactId].orEmpty(),
+                                photoUri = person.photoUri,
+                                accountName = person.accountName,
+                                accountType = person.accountType,
+                                isFavorite = person.starred,
+                                additionalNumbersJson = extrasJson,
+                                systemContactKey = sysKey
+                            )
+                        )
+                        contactsCount++
+                    } else {
+                        // Delete any leftover individual-number rows from earlier syncs
+                        matchingExistingRows.forEach { dup ->
+                            if (dup.id != keeper.id) {
+                                contactDao.deleteById(dup.id)
                             }
                         }
+                        val mergedPhoto = keeper.photoUri ?: person.photoUri
+                        val mergedEmail = keeper.email.ifBlank { emailsByContactId[person.contactId].orEmpty() }
+                        contactDao.update(
+                            keeper.copy(
+                                name = person.name,
+                                phoneNumber = if (keeper.systemContactKey == sysKey) keeper.phoneNumber else primary.rawNumber,
+                                normalizedNumber = if (keeper.systemContactKey == sysKey) keeper.normalizedNumber else primary.normalized,
+                                t9Key = T9Utils.toT9Key(person.name),
+                                email = mergedEmail,
+                                photoUri = mergedPhoto,
+                                accountName = keeper.accountName.ifBlank { person.accountName },
+                                accountType = keeper.accountType.ifBlank { person.accountType },
+                                isFavorite = keeper.isFavorite || person.starred,
+                                additionalNumbersJson = extrasJson,
+                                systemContactKey = sysKey
+                            )
+                        )
                     }
                 }
             }
 
             if (hasCallLogPermission()) {
+                val allContacts = contactDao.getAllOnce()
+                val contactLookup = T9Utils.buildNumberLookup(allContacts)
+
                 val projection = arrayOf(
                     CallLog.Calls.CACHED_NAME,
                     CallLog.Calls.NUMBER,
@@ -221,24 +337,33 @@ class DeviceContactsSync(
                             else -> CallDirection.OUTGOING
                         }
                         val normalized = T9Utils.normalizePhone(rawNumber)
-                        val contact = contactDao.findByNormalizedNumber(normalized)
-                        callLogDao.insert(
-                            CallLogEntity(
-                                contactId = contact?.id,
-                                displayName = contact?.name ?: cachedName,
-                                phoneNumber = rawNumber,
-                                normalizedNumber = normalized,
-                                direction = direction,
-                                timestamp = date,
-                                durationSeconds = duration,
-                                isSpam = direction == CallDirection.BLOCKED_SPAM
-                            )
+                        val existingLog = callLogDao.findMatchingCallLog(
+                            normalized = normalized,
+                            minTs = date - 3000L,
+                            maxTs = date + 3000L
                         )
-                        logsCount++
+                        if (existingLog == null) {
+                            val contact = contactLookup[normalized]
+                            callLogDao.insert(
+                                CallLogEntity(
+                                    contactId = contact?.id,
+                                    displayName = contact?.name ?: cachedName,
+                                    phoneNumber = rawNumber,
+                                    normalizedNumber = normalized,
+                                    direction = direction,
+                                    timestamp = date,
+                                    durationSeconds = duration,
+                                    isSpam = direction == CallDirection.BLOCKED_SPAM
+                                )
+                            )
+                            logsCount++
+                        }
                         limit++
                     }
                 }
             }
+
+            callLogDao.deduplicateLogs()
 
             Result.success(SyncResult(contactsCount, logsCount, discoveredAccounts.toList()))
         } catch (e: Exception) {

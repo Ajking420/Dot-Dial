@@ -51,6 +51,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.example.data.preferences.AudioOutputMode
 import com.example.data.preferences.DialerSettings
+import com.example.data.preferences.DialpadSoundStyle
 import com.example.ui.components.DotMatrixTagChip
 import com.example.ui.components.NothingSurfaceCard
 import com.example.ui.theme.DialerFontPreset
@@ -418,6 +419,7 @@ fun DisplayAndAudioSettingsCard(
     onSetAdaptiveRefreshRate: (Boolean) -> Unit,
     onSetUltraSmoothMode: (Boolean) -> Unit,
     onSetUiSounds: (Boolean) -> Unit,
+    onSetDialpadSoundStyle: (DialpadSoundStyle) -> Unit,
     onSetAudioOutputMode: (AudioOutputMode) -> Unit,
     onPickCustomRingtone: (Uri?) -> Unit
 ) {
@@ -498,9 +500,30 @@ fun DisplayAndAudioSettingsCard(
                 testTag = "ultra_smooth_switch"
             )
 
+            Text(
+                text = "DIALPAD NUMBER PRESS SOUND",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                DialpadSoundStyle.entries.forEach { soundStyle ->
+                    DotMatrixTagChip(
+                        label = soundStyle.label,
+                        active = settings.dialpadSoundStyle == soundStyle,
+                        onClick = { onSetDialpadSoundStyle(soundStyle) },
+                        testTag = "dialpad_sound_${soundStyle.id}"
+                    )
+                }
+            }
+
             SettingsSwitchRow(
-                title = "Dialpad & UI Sound Effects",
-                subtitle = "Play crisp DTMF tones & Nothing OS tactile clicks",
+                title = "UI Navigation & Tap Sounds",
+                subtitle = "Play tactile click sound on tabs, buttons & backspace",
                 checked = settings.uiSoundsEnabled,
                 onCheckedChange = onSetUiSounds,
                 testTag = "ui_sounds_switch"

@@ -71,6 +71,13 @@ import com.example.ui.components.NothingSurfaceCard
 import com.example.ui.components.PulsingDotIndicator
 import com.example.ui.theme.LocalDotDialStyle
 
+private val DialpadRows = listOf(
+    listOf("1" to "∞", "2" to "ABC", "3" to "DEF"),
+    listOf("4" to "GHI", "5" to "JKL", "6" to "MNO"),
+    listOf("7" to "PQRS", "8" to "TUV", "9" to "WXYZ"),
+    listOf("*" to "", "0" to "+", "#" to "")
+)
+
 @Composable
 fun DialerScreen(
     dialerQuery: String,
@@ -97,7 +104,7 @@ fun DialerScreen(
         DeviceNameHelper.resolveDialerBrandHeader(context)
     }
     val contactByNumber = remember(contacts) {
-        contacts.associateBy { it.normalizedNumber }
+        T9Utils.buildNumberLookup(contacts)
     }
 
     Column(
@@ -431,18 +438,11 @@ fun DialerScreen(
 
                     Spacer(modifier = Modifier.height(6.dp))
 
-                    val keypadRows = listOf(
-                        listOf("1" to "∞", "2" to "ABC", "3" to "DEF"),
-                        listOf("4" to "GHI", "5" to "JKL", "6" to "MNO"),
-                        listOf("7" to "PQRS", "8" to "TUV", "9" to "WXYZ"),
-                        listOf("*" to "", "0" to "+", "#" to "")
-                    )
-
                     Column(
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        keypadRows.forEach { row ->
+                        DialpadRows.forEach { row ->
                             Row(
                                 horizontalArrangement = Arrangement.spacedBy(16.dp),
                                 verticalAlignment = Alignment.CenterVertically
@@ -671,7 +671,8 @@ fun RecentCallRow(
                             style = MaterialTheme.typography.titleMedium,
                             color = MaterialTheme.colorScheme.onSurface,
                             maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
                         )
                         if (log.isSpam) {
                             Spacer(modifier = Modifier.width(6.dp))
@@ -693,7 +694,9 @@ fun RecentCallRow(
                     Text(
                         text = "$relTime  •  ${T9Utils.formatDuration(log.durationSeconds)}",
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }

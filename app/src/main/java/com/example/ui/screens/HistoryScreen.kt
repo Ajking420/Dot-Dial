@@ -49,6 +49,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.example.data.local.CallLogEntity
 import com.example.data.local.ContactEntity
+import com.example.data.system.T9Utils
 import com.example.ui.components.DotMatrixTagChip
 import com.example.ui.components.NothingSurfaceCard
 import com.example.ui.components.SectionHeaderRow
@@ -72,7 +73,7 @@ fun HistoryScreen(
 ) {
     var showBackupBar by remember { mutableStateOf(false) }
     val contactByNumber = remember(contacts) {
-        contacts.associateBy { it.normalizedNumber }
+        T9Utils.buildNumberLookup(contacts)
     }
 
     val exportJsonLauncher = rememberLauncherForActivityResult(

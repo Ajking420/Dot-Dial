@@ -6,6 +6,7 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
@@ -43,7 +44,14 @@ fun DotDialTheme(
 ) {
     val forceAmoledBg = amoledBlackEnabled && preset != DialerThemePreset.WHITE_RED && preset != DialerThemePreset.CHALK_MATRIX
 
-    val colorScheme = when (preset) {
+    val colorScheme = remember(
+        preset,
+        forceAmoledBg,
+        customBgHex,
+        customSurfaceHex,
+        customAccentHex,
+        customTextHex
+    ) { when (preset) {
         DialerThemePreset.NOTHING_DARK -> darkColorScheme(
             primary = NothingRed,
             onPrimary = ChalkWhite,
@@ -198,29 +206,48 @@ fun DotDialTheme(
                 )
             }
         }
-    }
+    } }
 
     val isDark = colorScheme.background.luminance() < 0.45f
-    val extended = DotDialExtendedStyle(
-        preset = preset,
-        dotDensity = dotDensity,
-        hairlineBorder = colorScheme.outline,
-        dotGridColor = if (isDark) colorScheme.onSurface.copy(alpha = 0.16f) else colorScheme.onSurface.copy(alpha = 0.14f),
-        accentGlow = colorScheme.primary,
-        isDark = isDark,
-        fontPreset = fontPreset,
-        fontStyleMode = fontStyleMode,
-        coolJazzGlow = coolJazzGlow
-    )
+    val extended = remember(
+        preset,
+        dotDensity,
+        colorScheme,
+        isDark,
+        fontPreset,
+        fontStyleMode,
+        coolJazzGlow
+    ) {
+        DotDialExtendedStyle(
+            preset = preset,
+            dotDensity = dotDensity,
+            hairlineBorder = colorScheme.outline,
+            dotGridColor = if (isDark) colorScheme.onSurface.copy(alpha = 0.16f) else colorScheme.onSurface.copy(alpha = 0.14f),
+            accentGlow = colorScheme.primary,
+            isDark = isDark,
+            fontPreset = fontPreset,
+            fontStyleMode = fontStyleMode,
+            coolJazzGlow = coolJazzGlow
+        )
+    }
 
-    val typography = buildDynamicTypography(
-        fontPreset = fontPreset,
-        styleMode = fontStyleMode,
-        fontScale = fontScale,
-        coolJazzGlow = coolJazzGlow,
-        isDarkTheme = isDark,
-        customFontPath = customFontPath
-    )
+    val typography = remember(
+        fontPreset,
+        fontStyleMode,
+        fontScale,
+        coolJazzGlow,
+        isDark,
+        customFontPath
+    ) {
+        buildDynamicTypography(
+            fontPreset = fontPreset,
+            styleMode = fontStyleMode,
+            fontScale = fontScale,
+            coolJazzGlow = coolJazzGlow,
+            isDarkTheme = isDark,
+            customFontPath = customFontPath
+        )
+    }
 
     CompositionLocalProvider(LocalDotDialStyle provides extended) {
         MaterialTheme(

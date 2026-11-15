@@ -6,6 +6,8 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.TypeConverter
 import androidx.room.TypeConverters
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -27,7 +29,7 @@ class DotDialConverters {
         VibrationPatternEntity::class,
         SpamRuleEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 @TypeConverters(DotDialConverters::class)
@@ -42,6 +44,13 @@ abstract class DotDialDatabase : RoomDatabase() {
         @Volatile
         private var INSTANCE: DotDialDatabase? = null
 
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE contacts ADD COLUMN additionalNumbersJson TEXT NOT NULL DEFAULT '[]'")
+                db.execSQL("ALTER TABLE contacts ADD COLUMN systemContactKey TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
         fun getInstance(context: Context): DotDialDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -49,6 +58,7 @@ abstract class DotDialDatabase : RoomDatabase() {
                     DotDialDatabase::class.java,
                     "dot_dial_vault.db"
                 )
+                    .addMigrations(MIGRATION_2_3)
                     .fallbackToDestructiveMigration(true)
                     .build()
                     .also { db ->

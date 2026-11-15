@@ -4,6 +4,8 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -54,13 +56,19 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
+import com.example.R
 import com.example.data.local.VibrationPatternEntity
 import com.example.data.preferences.AudioOutputMode
 import com.example.data.preferences.AutoRecordMode
+import com.example.data.preferences.ColorPlateStyle
 import com.example.data.preferences.DialerSettings
-import com.example.ui.components.CallerVideoBackdrop
+import com.example.data.preferences.DialpadSoundStyle
+import com.example.data.preferences.UiBackgroundMode
 import com.example.ui.components.DotMatrixTagChip
 import com.example.ui.components.NothingSurfaceCard
 import com.example.ui.components.SectionHeaderRow
@@ -86,6 +94,7 @@ fun SettingsScreen(
     onSetAdaptiveRefreshRate: (Boolean) -> Unit,
     onSetUltraSmoothMode: (Boolean) -> Unit,
     onSetUiSounds: (Boolean) -> Unit,
+    onSetDialpadSoundStyle: (DialpadSoundStyle) -> Unit,
     onSetAudioOutputMode: (AudioOutputMode) -> Unit,
     onPickCustomRingtone: (Uri?) -> Unit,
     onPickDefaultVideo: (Uri?) -> Unit,
@@ -98,6 +107,15 @@ fun SettingsScreen(
     onSetSilentRecording: (Boolean) -> Unit,
     onSetAutoSummarize: (Boolean) -> Unit,
     onSetVoiceControl: (Boolean) -> Unit,
+    onSetShowContactQuickActions: (Boolean) -> Unit,
+    onSelectBackgroundMode: (UiBackgroundMode) -> Unit,
+    onToggleDotMatrix: (Boolean) -> Unit,
+    onSelectDotMatrixBgHex: (Long) -> Unit,
+    onSelectColorPlateStyle: (ColorPlateStyle) -> Unit,
+    onSelectSolidBgHex: (Long) -> Unit,
+    onSelectGradientColors: (Long, Long) -> Unit,
+    onPickWallpaper: (Uri?) -> Unit,
+    onWallpaperDimChange: (Float) -> Unit,
     onSetVaultPin: (String) -> Unit,
     onExportBackupJson: (Uri) -> Unit,
     onExportContactsVcf: (Uri) -> Unit,
@@ -135,7 +153,7 @@ fun SettingsScreen(
         verticalArrangement = Arrangement.spacedBy(14.dp),
         contentPadding = PaddingValues(top = 8.dp, bottom = 96.dp)
     ) {
-        item {
+        item(key = "settings_header", contentType = "header") {
             SectionHeaderRow(
                 title = "SETTINGS & NOTHING STUDIO",
                 subtitle = "Themes, fonts, 60-120 FPS, ringtones, audio routing & privacy"
@@ -143,7 +161,7 @@ fun SettingsScreen(
         }
 
         // Theme & AMOLED Studio
-        item {
+        item(key = "theme_appearance", contentType = "settings_card") {
             ThemeAppearanceSettingsCard(
                 settings = settings,
                 onSelectTheme = onSelectTheme,
@@ -153,8 +171,25 @@ fun SettingsScreen(
             )
         }
 
+        // UI Background Studio (Dot Matrix / Color Plate / Wallpaper)
+        item(key = "bg_studio", contentType = "settings_card") {
+            UiBackgroundSettingsCard(
+                settings = settings,
+                onSelectBackgroundMode = onSelectBackgroundMode,
+                onToggleDotMatrix = onToggleDotMatrix,
+                onSelectDotMatrixBgHex = onSelectDotMatrixBgHex,
+                onToggleAmoledBlack = onToggleAmoledBlack,
+                onDotDensityChange = onDotDensityChange,
+                onSelectColorPlateStyle = onSelectColorPlateStyle,
+                onSelectSolidBgHex = onSelectSolidBgHex,
+                onSelectGradientColors = onSelectGradientColors,
+                onPickWallpaper = onPickWallpaper,
+                onWallpaperDimChange = onWallpaperDimChange
+            )
+        }
+
         // Font & Cool Jazz Studio
-        item {
+        item(key = "typography_studio", contentType = "settings_card") {
             TypographySettingsCard(
                 settings = settings,
                 onSelectFontPreset = onSelectFontPreset,
@@ -166,7 +201,7 @@ fun SettingsScreen(
         }
 
         // Display FPS, Sounds, Ringtone & Audio Output
-        item {
+        item(key = "display_audio", contentType = "settings_card") {
             DisplayAndAudioSettingsCard(
                 settings = settings,
                 supportedRefreshRates = supportedRefreshRates,
@@ -174,13 +209,14 @@ fun SettingsScreen(
                 onSetAdaptiveRefreshRate = onSetAdaptiveRefreshRate,
                 onSetUltraSmoothMode = onSetUltraSmoothMode,
                 onSetUiSounds = onSetUiSounds,
+                onSetDialpadSoundStyle = onSetDialpadSoundStyle,
                 onSetAudioOutputMode = onSetAudioOutputMode,
                 onPickCustomRingtone = onPickCustomRingtone
             )
         }
 
         // Home Screen Contact Widget
-        item {
+        item(key = "contact_widget", contentType = "settings_card") {
             NothingSurfaceCard(modifier = Modifier.fillMaxWidth()) {
                 Row(
                     modifier = Modifier
@@ -228,7 +264,7 @@ fun SettingsScreen(
         }
 
         // Privacy, Auto Call Recording & Voice Settings
-        item {
+        item(key = "privacy_recording", contentType = "settings_card") {
             NothingSurfaceCard(modifier = Modifier.fillMaxWidth()) {
                 Column(
                     modifier = Modifier
@@ -296,6 +332,14 @@ fun SettingsScreen(
                         testTag = "auto_summarize_switch"
                     )
 
+                    SettingsSwitchRow(
+                        title = "Contact Detail Quick Actions (SMS, WhatsApp, Gmail)",
+                        subtitle = "Show or hide SMS, WhatsApp & Gmail buttons on contact cards",
+                        checked = settings.showContactQuickActions,
+                        onCheckedChange = onSetShowContactQuickActions,
+                        testTag = "contact_quick_actions_switch"
+                    )
+
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -329,7 +373,7 @@ fun SettingsScreen(
         }
 
         // Backup & Restore Card
-        item {
+        item(key = "backup_restore", contentType = "settings_card") {
             NothingSurfaceCard(modifier = Modifier.fillMaxWidth()) {
                 Column(
                     modifier = Modifier
@@ -394,7 +438,7 @@ fun SettingsScreen(
         }
 
         // Caller Screen Video Backdrop Customizer
-        item {
+        item(key = "video_backdrop", contentType = "settings_card") {
             NothingSurfaceCard(modifier = Modifier.fillMaxWidth()) {
                 Column(
                     modifier = Modifier
@@ -423,10 +467,25 @@ fun SettingsScreen(
                             .height(140.dp)
                             .clip(RoundedCornerShape(18.dp))
                     ) {
-                        CallerVideoBackdrop(
-                            videoUriString = settings.defaultVideoBackdropUri,
-                            redTintStrength = settings.videoRedTintStrength,
-                            isRingingOrActive = true
+                        Image(
+                            painter = painterResource(R.drawable.img_nothing_glyph_backdrop_1794769643357),
+                            contentDescription = "Caller screen video backdrop preview",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(
+                                    Brush.verticalGradient(
+                                        listOf(
+                                            MaterialTheme.colorScheme.primary.copy(
+                                                alpha = settings.videoRedTintStrength * 0.65f
+                                            ),
+                                            MaterialTheme.colorScheme.background.copy(alpha = 0.72f)
+                                        )
+                                    )
+                                )
                         )
                         Text(
                             text = if (settings.defaultVideoBackdropUri != null) "CUSTOM VIDEO + THEME TINT"
@@ -489,7 +548,7 @@ fun SettingsScreen(
         }
 
         // Vibration Glyph Pattern Studio
-        item {
+        item(key = "vibration_studio", contentType = "settings_card") {
             NothingSurfaceCard(modifier = Modifier.fillMaxWidth()) {
                 Column(
                     modifier = Modifier
@@ -592,7 +651,11 @@ fun SettingsScreen(
             }
         }
 
-        items(vibrationPatterns, key = { it.id }) { pattern ->
+        items(
+            items = vibrationPatterns,
+            key = { it.id },
+            contentType = { "vibration_pattern" }
+        ) { pattern ->
             val isSelected = settings.activeVibrationPatternId == pattern.id
             NothingSurfaceCard(
                 modifier = Modifier
@@ -651,7 +714,7 @@ fun SettingsScreen(
             }
         }
 
-        item {
+        item(key = "about_card", contentType = "settings_card") {
             AboutSettingsCard()
         }
     }

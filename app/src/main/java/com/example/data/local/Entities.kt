@@ -2,6 +2,56 @@ package com.example.data.local
 
 import androidx.room.Entity
 import androidx.room.PrimaryKey
+import com.example.data.system.T9Utils
+import org.json.JSONArray
+import org.json.JSONObject
+
+data class ContactPhoneNumber(
+    val number: String,
+    val label: String = "Mobile",
+    val isDefault: Boolean = false
+)
+
+object ContactNumbersCodec {
+    fun decode(json: String): List<ContactPhoneNumber> {
+        if (json.isBlank() || json == "[]") return emptyList()
+        return runCatching {
+            val arr = JSONArray(json)
+            buildList {
+                for (i in 0 until arr.length()) {
+                    val obj = arr.optJSONObject(i) ?: continue
+                    val num = obj.optString("number").trim()
+                    if (num.isNotEmpty()) {
+                        add(
+                            ContactPhoneNumber(
+                                number = num,
+                                label = obj.optString("label", "Mobile").ifBlank { "Mobile" },
+                                isDefault = false
+                            )
+                        )
+                    }
+                }
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    fun encode(entries: List<ContactPhoneNumber>): String {
+        if (entries.isEmpty()) return "[]"
+        val arr = JSONArray()
+        entries.forEach { entry ->
+            val clean = entry.number.trim()
+            if (clean.isNotEmpty()) {
+                arr.put(
+                    JSONObject().apply {
+                        put("number", clean)
+                        put("label", entry.label.ifBlank { "Mobile" })
+                    }
+                )
+            }
+        }
+        return arr.toString()
+    }
+}
 
 @Entity(tableName = "contacts")
 data class ContactEntity(
@@ -22,8 +72,34 @@ data class ContactEntity(
     val videoBackdropUri: String? = null,
     val vibrationPatternId: Long = 1L,
     val notes: String = "",
+    val additionalNumbersJson: String = "[]",
+    val systemContactKey: String = "",
     val updatedAt: Long = System.currentTimeMillis()
-)
+) {
+    fun allPhoneNumbers(): List<ContactPhoneNumber> {
+        val primaryNorm = T9Utils.normalizePhone(phoneNumber)
+        val seen = linkedSetOf(primaryNorm)
+        val result = mutableListOf(
+            ContactPhoneNumber(
+                number = phoneNumber,
+                label = "Default",
+                isDefault = true
+            )
+        )
+        ContactNumbersCodec.decode(additionalNumbersJson).forEach { extra ->
+            val norm = T9Utils.normalizePhone(extra.number)
+            if (norm.isNotEmpty() && seen.add(norm)) {
+                result.add(extra)
+            }
+        }
+        return result
+    }
+
+    fun allNormalizedNumbers(): List<String> =
+        allPhoneNumbers().mapNotNull { entry ->
+            T9Utils.normalizePhone(entry.number).takeIf { it.isNotEmpty() }
+        }.distinct()
+}
 
 enum class CallDirection {
     INCOMING,

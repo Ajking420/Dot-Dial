@@ -123,11 +123,11 @@ fun buildDynamicTypography(
     val resolvedBoldWeight = FontWeight.Bold
     val letterSpacingAdjustFloat = if (styleMode == FontStyleMode.SEMI_ITALIC) 0.4f else 0f
 
-    val glowShadow = if ((fontPreset == DialerFontPreset.COOL_JAZZ || coolJazzGlow) && isDarkTheme) {
+    val glowShadow = if (fontPreset == DialerFontPreset.COOL_JAZZ && coolJazzGlow && isDarkTheme) {
         Shadow(
-            color = Color.White.copy(alpha = 0.52f),
+            color = Color.White.copy(alpha = 0.48f),
             offset = Offset(0f, 0f),
-            blurRadius = 10f
+            blurRadius = 5f
         )
     } else null
 
@@ -174,8 +174,7 @@ fun buildDynamicTypography(
             fontStyle = resolvedStyle,
             fontSize = (16f * scale).sp,
             lineHeight = (22f * scale).sp,
-            letterSpacing = 0.2.sp,
-            shadow = glowShadow
+            letterSpacing = 0.2.sp
         ),
         bodyLarge = TextStyle(
             fontFamily = bodyFamily,
@@ -183,8 +182,7 @@ fun buildDynamicTypography(
             fontStyle = resolvedStyle,
             fontSize = (15f * scale).sp,
             lineHeight = (21f * scale).sp,
-            letterSpacing = 0.15.sp,
-            shadow = glowShadow
+            letterSpacing = 0.15.sp
         ),
         bodyMedium = TextStyle(
             fontFamily = bodyFamily,
@@ -200,8 +198,7 @@ fun buildDynamicTypography(
             fontStyle = resolvedStyle,
             fontSize = (13f * scale).sp,
             lineHeight = (16f * scale).sp,
-            letterSpacing = 0.8.sp,
-            shadow = glowShadow
+            letterSpacing = 0.8.sp
         ),
         labelMedium = TextStyle(
             fontFamily = if (fontPreset == DialerFontPreset.COOL_JAZZ) CoolJazzFamily else JetBrainsMonoFamily,

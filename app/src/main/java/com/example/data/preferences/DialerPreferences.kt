@@ -42,6 +42,39 @@ enum class AutoRecordMode(val id: String, val label: String) {
     }
 }
 
+enum class UiBackgroundMode(val id: String, val label: String) {
+    DOT_MATRIX("dot_matrix", "DOT MATRIX"),
+    COLOR_PLATE("color_plate", "COLOR / GRADIENT"),
+    WALLPAPER("wallpaper", "WALLPAPER");
+
+    companion object {
+        fun fromId(id: String?): UiBackgroundMode =
+            entries.firstOrNull { it.id == id } ?: DOT_MATRIX
+    }
+}
+
+enum class ColorPlateStyle(val id: String, val label: String) {
+    SOLID("solid", "BASIC COLOR"),
+    GRADIENT("gradient", "GRADIENT");
+
+    companion object {
+        fun fromId(id: String?): ColorPlateStyle =
+            entries.firstOrNull { it.id == id } ?: GRADIENT
+    }
+}
+
+enum class DialpadSoundStyle(val id: String, val label: String) {
+    CLASSIC_DTMF("classic_dtmf", "DTMF TONE"),
+    NOTHING_SOFT("nothing_soft", "SOFT POP"),
+    DOT_CHIME("dot_chime", "DOT CHIME"),
+    OFF("off", "OFF");
+
+    companion object {
+        fun fromId(id: String?): DialpadSoundStyle =
+            entries.firstOrNull { it.id == id } ?: CLASSIC_DTMF
+    }
+}
+
 data class DialerSettings(
     val themePreset: DialerThemePreset = DialerThemePreset.NOTHING_DARK,
     val amoledBlackEnabled: Boolean = false,
@@ -56,9 +89,20 @@ data class DialerSettings(
     val customFontPath: String? = null,
     val dotDensity: Float = 0.65f,
     val uiSoundsEnabled: Boolean = true,
+    val dialpadSoundStyle: DialpadSoundStyle = DialpadSoundStyle.CLASSIC_DTMF,
     val preferredFps: Int = 90,
     val adaptiveRefreshRate: Boolean = true,
     val ultraSmoothMode: Boolean = false,
+    val showContactQuickActions: Boolean = true,
+    val uiBackgroundMode: UiBackgroundMode = UiBackgroundMode.DOT_MATRIX,
+    val dotMatrixEnabled: Boolean = true,
+    val dotMatrixBgHex: Long = 0L,
+    val colorPlateStyle: ColorPlateStyle = ColorPlateStyle.GRADIENT,
+    val solidBgHex: Long = 0xFF000000L,
+    val gradientStartHex: Long = 0xFF23060BL,
+    val gradientEndHex: Long = 0xFF050508L,
+    val wallpaperPath: String? = null,
+    val wallpaperDimStrength: Float = 0.45f,
     val audioOutputMode: AudioOutputMode = AudioOutputMode.AUTO_BT_EAR,
     val autoRecordMode: AutoRecordMode = AutoRecordMode.OFF,
     val silentCallRecording: Boolean = true,
@@ -89,9 +133,20 @@ class DialerPreferences(private val context: Context) {
         val CUSTOM_FONT_PATH = stringPreferencesKey("custom_font_path")
         val DOT_DENSITY = floatPreferencesKey("dot_density")
         val UI_SOUNDS = booleanPreferencesKey("ui_sounds")
+        val DIALPAD_SOUND_STYLE = stringPreferencesKey("dialpad_sound_style")
         val PREFERRED_FPS = intPreferencesKey("preferred_fps")
         val ADAPTIVE_REFRESH_RATE = booleanPreferencesKey("adaptive_refresh_rate")
         val ULTRA_SMOOTH_MODE = booleanPreferencesKey("ultra_smooth_mode")
+        val SHOW_CONTACT_QUICK_ACTIONS = booleanPreferencesKey("show_contact_quick_actions")
+        val UI_BACKGROUND_MODE = stringPreferencesKey("ui_background_mode")
+        val DOT_MATRIX_ENABLED = booleanPreferencesKey("dot_matrix_enabled")
+        val DOT_MATRIX_BG_HEX = longPreferencesKey("dot_matrix_bg_hex")
+        val COLOR_PLATE_STYLE = stringPreferencesKey("color_plate_style")
+        val SOLID_BG_HEX = longPreferencesKey("solid_bg_hex")
+        val GRADIENT_START_HEX = longPreferencesKey("gradient_start_hex")
+        val GRADIENT_END_HEX = longPreferencesKey("gradient_end_hex")
+        val WALLPAPER_PATH = stringPreferencesKey("wallpaper_path")
+        val WALLPAPER_DIM = floatPreferencesKey("wallpaper_dim")
         val AUDIO_OUTPUT_MODE = stringPreferencesKey("audio_output_mode")
         val AUTO_RECORD_MODE = stringPreferencesKey("auto_record_mode")
         val SILENT_RECORDING = booleanPreferencesKey("silent_recording")
@@ -121,9 +176,20 @@ class DialerPreferences(private val context: Context) {
             customFontPath = prefs[Keys.CUSTOM_FONT_PATH]?.takeIf { it.isNotBlank() },
             dotDensity = prefs[Keys.DOT_DENSITY] ?: 0.65f,
             uiSoundsEnabled = prefs[Keys.UI_SOUNDS] ?: true,
+            dialpadSoundStyle = DialpadSoundStyle.fromId(prefs[Keys.DIALPAD_SOUND_STYLE]),
             preferredFps = prefs[Keys.PREFERRED_FPS] ?: 90,
             adaptiveRefreshRate = prefs[Keys.ADAPTIVE_REFRESH_RATE] ?: true,
             ultraSmoothMode = prefs[Keys.ULTRA_SMOOTH_MODE] ?: false,
+            showContactQuickActions = prefs[Keys.SHOW_CONTACT_QUICK_ACTIONS] ?: true,
+            uiBackgroundMode = UiBackgroundMode.fromId(prefs[Keys.UI_BACKGROUND_MODE]),
+            dotMatrixEnabled = prefs[Keys.DOT_MATRIX_ENABLED] ?: true,
+            dotMatrixBgHex = prefs[Keys.DOT_MATRIX_BG_HEX] ?: 0L,
+            colorPlateStyle = ColorPlateStyle.fromId(prefs[Keys.COLOR_PLATE_STYLE]),
+            solidBgHex = prefs[Keys.SOLID_BG_HEX] ?: 0xFF000000L,
+            gradientStartHex = prefs[Keys.GRADIENT_START_HEX] ?: 0xFF23060BL,
+            gradientEndHex = prefs[Keys.GRADIENT_END_HEX] ?: 0xFF050508L,
+            wallpaperPath = prefs[Keys.WALLPAPER_PATH]?.takeIf { it.isNotBlank() },
+            wallpaperDimStrength = prefs[Keys.WALLPAPER_DIM] ?: 0.45f,
             audioOutputMode = AudioOutputMode.fromId(prefs[Keys.AUDIO_OUTPUT_MODE]),
             autoRecordMode = AutoRecordMode.fromId(prefs[Keys.AUTO_RECORD_MODE]),
             silentCallRecording = prefs[Keys.SILENT_RECORDING] ?: true,
@@ -191,6 +257,10 @@ class DialerPreferences(private val context: Context) {
         context.dialerDataStore.edit { it[Keys.UI_SOUNDS] = enabled }
     }
 
+    suspend fun setDialpadSoundStyle(style: DialpadSoundStyle) {
+        context.dialerDataStore.edit { it[Keys.DIALPAD_SOUND_STYLE] = style.id }
+    }
+
     suspend fun setPreferredFps(fps: Int) {
         val clamped = if (fps == 0) 0 else fps.coerceIn(60, 120)
         context.dialerDataStore.edit { it[Keys.PREFERRED_FPS] = clamped }
@@ -202,6 +272,67 @@ class DialerPreferences(private val context: Context) {
 
     suspend fun setUltraSmoothMode(enabled: Boolean) {
         context.dialerDataStore.edit { it[Keys.ULTRA_SMOOTH_MODE] = enabled }
+    }
+
+    suspend fun setShowContactQuickActions(enabled: Boolean) {
+        context.dialerDataStore.edit { it[Keys.SHOW_CONTACT_QUICK_ACTIONS] = enabled }
+    }
+
+    suspend fun setUiBackgroundMode(mode: UiBackgroundMode) {
+        context.dialerDataStore.edit { it[Keys.UI_BACKGROUND_MODE] = mode.id }
+    }
+
+    suspend fun setDotMatrixEnabled(enabled: Boolean) {
+        context.dialerDataStore.edit { it[Keys.DOT_MATRIX_ENABLED] = enabled }
+    }
+
+    suspend fun setDotMatrixBgHex(hex: Long) {
+        context.dialerDataStore.edit {
+            it[Keys.DOT_MATRIX_BG_HEX] = hex
+            it[Keys.UI_BACKGROUND_MODE] = UiBackgroundMode.DOT_MATRIX.id
+        }
+    }
+
+    suspend fun setColorPlateStyle(style: ColorPlateStyle) {
+        context.dialerDataStore.edit {
+            it[Keys.COLOR_PLATE_STYLE] = style.id
+            it[Keys.UI_BACKGROUND_MODE] = UiBackgroundMode.COLOR_PLATE.id
+        }
+    }
+
+    suspend fun setSolidBgHex(hex: Long) {
+        context.dialerDataStore.edit {
+            it[Keys.SOLID_BG_HEX] = hex
+            it[Keys.COLOR_PLATE_STYLE] = ColorPlateStyle.SOLID.id
+            it[Keys.UI_BACKGROUND_MODE] = UiBackgroundMode.COLOR_PLATE.id
+        }
+    }
+
+    suspend fun setGradientColors(startHex: Long, endHex: Long) {
+        context.dialerDataStore.edit {
+            it[Keys.GRADIENT_START_HEX] = startHex
+            it[Keys.GRADIENT_END_HEX] = endHex
+            it[Keys.COLOR_PLATE_STYLE] = ColorPlateStyle.GRADIENT.id
+            it[Keys.UI_BACKGROUND_MODE] = UiBackgroundMode.COLOR_PLATE.id
+        }
+    }
+
+    suspend fun setWallpaperPath(path: String?) {
+        context.dialerDataStore.edit {
+            if (path.isNullOrBlank()) {
+                it.remove(Keys.WALLPAPER_PATH)
+                if (it[Keys.UI_BACKGROUND_MODE] == UiBackgroundMode.WALLPAPER.id) {
+                    it[Keys.UI_BACKGROUND_MODE] = UiBackgroundMode.DOT_MATRIX.id
+                }
+            } else {
+                it[Keys.WALLPAPER_PATH] = path
+                it[Keys.UI_BACKGROUND_MODE] = UiBackgroundMode.WALLPAPER.id
+            }
+        }
+    }
+
+    suspend fun setWallpaperDimStrength(dim: Float) {
+        context.dialerDataStore.edit { it[Keys.WALLPAPER_DIM] = dim.coerceIn(0.05f, 0.85f) }
     }
 
     suspend fun setAudioOutputMode(mode: AudioOutputMode) {

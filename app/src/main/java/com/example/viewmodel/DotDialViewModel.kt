@@ -2,6 +2,8 @@ package com.example.viewmodel
 
 import android.app.Application
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
@@ -12,11 +14,16 @@ import com.example.data.local.CallDirection
 import com.example.data.local.CallLogEntity
 import com.example.data.local.CallRecordingEntity
 import com.example.data.local.ContactEntity
+import com.example.data.local.ContactNumbersCodec
+import com.example.data.local.ContactPhoneNumber
 import com.example.data.local.SpamRuleEntity
 import com.example.data.local.VibrationPatternEntity
 import com.example.data.preferences.AudioOutputMode
 import com.example.data.preferences.AutoRecordMode
+import com.example.data.preferences.ColorPlateStyle
 import com.example.data.preferences.DialerSettings
+import com.example.data.preferences.DialpadSoundStyle
+import com.example.data.preferences.UiBackgroundMode
 import com.example.data.system.ActiveAudioRoute
 import com.example.data.system.T9Utils
 import com.example.telecom.CallDisplayMode
@@ -215,7 +222,8 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
                     CallLifecycleState.INCOMING_RINGING -> {
                         if (session.isSystemTelecomCall && session.phoneNumber.isNotBlank()) {
                             val normalized = T9Utils.normalizePhone(session.phoneNumber)
-                            val contact = db.contactDao().findByNormalizedNumber(normalized)
+                            val contact = T9Utils.buildNumberLookup(contacts.value)[normalized]
+                                ?: db.contactDao().findByNormalizedNumber(normalized)
                             val verdict = spamEngine.evaluateNumber(session.phoneNumber, session.displayName)
                             val curSettings = settings.value
                             CallSessionBridge.enrichWithContact(
@@ -296,7 +304,7 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
 
     fun appendDialDigit(digit: String) {
         vibEngine.pulseKeypadTick()
-        uiSounds.playDialTone(digit, settings.value.uiSoundsEnabled)
+        uiSounds.playDialTone(digit, settings.value.dialpadSoundStyle)
         _dialerQuery.value += digit
     }
 
@@ -426,7 +434,9 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             playUiClick()
             val normalized = T9Utils.normalizePhone(cleaned)
-            val contact = explicitContact ?: db.contactDao().findByNormalizedNumber(normalized)
+            val contact = explicitContact
+                ?: T9Utils.buildNumberLookup(contacts.value)[normalized]
+                ?: db.contactDao().findByNormalizedNumber(normalized)
             val verdict = spamEngine.evaluateNumber(cleaned, contact?.name.orEmpty())
             val curSettings = settings.value
             val initialRoute = audioRoutes.resolvePreferredRoute(curSettings.audioOutputMode)
@@ -965,6 +975,7 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
         callingCardUri: String? = null,
         videoBackdropUri: String? = null,
         vibrationPatternId: Long = 1L,
+        additionalNumbersJson: String? = null,
         syncToSystem: Boolean = true
     ) {
         if (name.isBlank() || phoneNumber.isBlank()) {
@@ -974,6 +985,7 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             val normalized = T9Utils.normalizePhone(phoneNumber)
             val existing = existingId?.let { db.contactDao().findById(it) }
+            val resolvedExtras = additionalNumbersJson ?: existing?.additionalNumbersJson ?: "[]"
             db.contactDao().upsert(
                 ContactEntity(
                     id = existing?.id ?: 0L,
@@ -992,7 +1004,9 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
                     spamScore = existing?.spamScore ?: 0,
                     videoBackdropUri = videoBackdropUri ?: existing?.videoBackdropUri,
                     vibrationPatternId = vibrationPatternId,
-                    notes = notes.trim()
+                    notes = notes.trim(),
+                    additionalNumbersJson = resolvedExtras,
+                    systemContactKey = existing?.systemContactKey.orEmpty()
                 )
             )
             if (syncToSystem && existing == null) {
@@ -1005,6 +1019,29 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
             }
             DotDialContactWidgetProvider.refreshAll(getApplication())
             _statusMessage.value = "Contact saved."
+        }
+    }
+
+    fun setDefaultContactNumber(contact: ContactEntity, newDefault: ContactPhoneNumber) {
+        viewModelScope.launch {
+            val newNorm = T9Utils.normalizePhone(newDefault.number)
+            if (newNorm.isEmpty() || newNorm == contact.normalizedNumber) return@launch
+            val rebuiltExtras = contact.allPhoneNumbers()
+                .filter { T9Utils.normalizePhone(it.number) != newNorm }
+                .map { entry ->
+                    if (entry.isDefault) ContactPhoneNumber(entry.number, "Mobile")
+                    else entry
+                }
+            db.contactDao().update(
+                contact.copy(
+                    phoneNumber = newDefault.number,
+                    normalizedNumber = newNorm,
+                    additionalNumbersJson = ContactNumbersCodec.encode(rebuiltExtras),
+                    updatedAt = System.currentTimeMillis()
+                )
+            )
+            DotDialContactWidgetProvider.refreshAll(getApplication())
+            _statusMessage.value = "Default number updated to ${newDefault.number}."
         }
     }
 
@@ -1179,6 +1216,13 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch { prefs.setUiSoundsEnabled(enabled) }
     }
 
+    fun setDialpadSoundStyle(style: DialpadSoundStyle) {
+        if (style != DialpadSoundStyle.OFF) {
+            uiSounds.playDialTone("5", style)
+        }
+        viewModelScope.launch { prefs.setDialpadSoundStyle(style) }
+    }
+
     fun setPreferredFps(fps: Int) {
         playUiClick()
         viewModelScope.launch { prefs.setPreferredFps(fps) }
@@ -1192,6 +1236,92 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
     fun setUltraSmoothMode(enabled: Boolean) {
         playUiClick()
         viewModelScope.launch { prefs.setUltraSmoothMode(enabled) }
+    }
+
+    fun setShowContactQuickActions(enabled: Boolean) {
+        playUiClick()
+        viewModelScope.launch { prefs.setShowContactQuickActions(enabled) }
+    }
+
+    fun setUiBackgroundMode(mode: UiBackgroundMode) {
+        playUiClick()
+        viewModelScope.launch { prefs.setUiBackgroundMode(mode) }
+    }
+
+    fun setDotMatrixEnabled(enabled: Boolean) {
+        playUiClick()
+        viewModelScope.launch { prefs.setDotMatrixEnabled(enabled) }
+    }
+
+    fun setDotMatrixBgHex(hex: Long) {
+        playUiClick()
+        viewModelScope.launch { prefs.setDotMatrixBgHex(hex) }
+    }
+
+    fun setColorPlateStyle(style: ColorPlateStyle) {
+        playUiClick()
+        viewModelScope.launch { prefs.setColorPlateStyle(style) }
+    }
+
+    fun setSolidBgHex(hex: Long) {
+        playUiClick()
+        viewModelScope.launch { prefs.setSolidBgHex(hex) }
+    }
+
+    fun setGradientColors(startHex: Long, endHex: Long) {
+        playUiClick()
+        viewModelScope.launch { prefs.setGradientColors(startHex, endHex) }
+    }
+
+    fun setWallpaperUri(uri: Uri?) {
+        viewModelScope.launch {
+            if (uri == null) {
+                withContext(Dispatchers.IO) {
+                    File(getApplication<Application>().filesDir, "ui_wallpaper.jpg").delete()
+                }
+                prefs.setWallpaperPath(null)
+                _statusMessage.value = "Wallpaper cleared."
+                return@launch
+            }
+            val savedPath = withContext(Dispatchers.IO) {
+                runCatching {
+                    val app = getApplication<Application>()
+                    val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    app.contentResolver.openInputStream(uri)?.use { input ->
+                        BitmapFactory.decodeStream(input, null, boundsOpts)
+                    }
+                    val maxDim = maxOf(boundsOpts.outWidth, boundsOpts.outHeight)
+                    var sample = 1
+                    while (maxDim / sample > 1280) {
+                        sample *= 2
+                    }
+                    val decodeOpts = BitmapFactory.Options().apply {
+                        inSampleSize = sample
+                        inPreferredConfig = Bitmap.Config.RGB_565
+                    }
+                    val decoded = app.contentResolver.openInputStream(uri)?.use { input ->
+                        BitmapFactory.decodeStream(input, null, decodeOpts)
+                    } ?: return@runCatching null
+
+                    val outFile = File(app.filesDir, "ui_wallpaper.jpg")
+                    outFile.outputStream().use { out ->
+                        decoded.compress(Bitmap.CompressFormat.JPEG, 88, out)
+                    }
+                    decoded.recycle()
+                    outFile.absolutePath
+                }.getOrNull()
+            }
+            if (savedPath != null) {
+                prefs.setWallpaperPath(savedPath)
+                _statusMessage.value = "UI Wallpaper applied."
+            } else {
+                _statusMessage.value = "Could not load selected wallpaper."
+            }
+        }
+    }
+
+    fun setWallpaperDimStrength(dim: Float) {
+        viewModelScope.launch { prefs.setWallpaperDimStrength(dim) }
     }
 
     fun setAudioOutputMode(mode: AudioOutputMode) {

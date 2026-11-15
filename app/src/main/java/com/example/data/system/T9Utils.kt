@@ -36,12 +36,31 @@ object T9Utils {
         if (query.isBlank()) return true
         val cleaned = query.trim()
         val digitsQuery = cleaned.filter { it.isDigit() }
-        return contact.name.contains(cleaned, ignoreCase = true) ||
+        if (contact.name.contains(cleaned, ignoreCase = true) ||
+            contact.email.contains(cleaned, ignoreCase = true) ||
             contact.phoneNumber.contains(cleaned, ignoreCase = true) ||
-            (digitsQuery.isNotEmpty() && (
-                contact.t9Key.contains(digitsQuery) ||
-                    contact.normalizedNumber.contains(digitsQuery)
-                ))
+            contact.additionalNumbersJson.contains(cleaned, ignoreCase = true)
+        ) {
+            return true
+        }
+        if (digitsQuery.isNotEmpty()) {
+            if (contact.t9Key.contains(digitsQuery)) return true
+            if (contact.allNormalizedNumbers().any { it.contains(digitsQuery) }) return true
+        }
+        return false
+    }
+
+    fun buildNumberLookup(contacts: List<ContactEntity>): Map<String, ContactEntity> {
+        if (contacts.isEmpty()) return emptyMap()
+        val map = HashMap<String, ContactEntity>(contacts.size * 2)
+        contacts.forEach { contact ->
+            contact.allNormalizedNumbers().forEach { norm ->
+                if (!map.containsKey(norm)) {
+                    map[norm] = contact
+                }
+            }
+        }
+        return map
     }
 
     fun formatDuration(seconds: Int): String {

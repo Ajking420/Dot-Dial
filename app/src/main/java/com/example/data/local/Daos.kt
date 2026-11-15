@@ -18,6 +18,9 @@ interface ContactDao {
     @Query("SELECT * FROM contacts WHERE normalizedNumber = :normalized LIMIT 1")
     suspend fun findByNormalizedNumber(normalized: String): ContactEntity?
 
+    @Query("SELECT * FROM contacts WHERE systemContactKey = :key LIMIT 1")
+    suspend fun findBySystemContactKey(key: String): ContactEntity?
+
     @Query("SELECT * FROM contacts WHERE id = :id LIMIT 1")
     suspend fun findById(id: Long): ContactEntity?
 
@@ -65,6 +68,12 @@ interface CallLogDao {
 
     @Query("UPDATE call_logs SET recordingId = :recordingId WHERE id = :logId")
     suspend fun attachRecording(logId: Long, recordingId: Long)
+
+    @Query("SELECT * FROM call_logs WHERE normalizedNumber = :normalized AND timestamp BETWEEN :minTs AND :maxTs LIMIT 1")
+    suspend fun findMatchingCallLog(normalized: String, minTs: Long, maxTs: Long): CallLogEntity?
+
+    @Query("DELETE FROM call_logs WHERE id NOT IN (SELECT MIN(id) FROM call_logs GROUP BY normalizedNumber, CAST(timestamp / 3000 AS INTEGER), direction)")
+    suspend fun deduplicateLogs()
 
     @Query("DELETE FROM call_logs WHERE id = :id")
     suspend fun deleteById(id: Long)

@@ -59,6 +59,7 @@ import androidx.compose.ui.graphics.ShaderBrush
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -76,51 +77,157 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.example.R
+import com.example.data.preferences.ColorPlateStyle
+import com.example.data.preferences.DialerSettings
+import com.example.data.preferences.UiBackgroundMode
 import com.example.ui.theme.LocalDotDialStyle
+import java.io.File
 import kotlin.math.PI
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
+private val CardCornerShape = RoundedCornerShape(22.dp)
+
 @Composable
-fun DotMatrixCanvasBackdrop(
+fun DotDialBackgroundHost(
+    settings: DialerSettings,
     modifier: Modifier = Modifier
 ) {
     val dotStyle = LocalDotDialStyle.current
-    val gridColor = dotStyle.dotGridColor
-    val densityFactor = dotStyle.dotDensity
+    val themeBg = MaterialTheme.colorScheme.background
+    val densityFactor = if (settings.ultraSmoothMode) minOf(settings.dotDensity, 0.35f) else settings.dotDensity
 
-    Box(
-        modifier = modifier
-            .fillMaxSize()
-            .drawWithCache {
-                val spacingPx = (32f - densityFactor * 14f)
-                    .coerceIn(14f, 34f)
-                    .dp
-                    .toPx()
-                    .roundToInt()
-                    .coerceAtLeast(8)
-                val radiusPx = (1.1f + densityFactor * 0.6f).dp.toPx()
-
-                val tile = Bitmap.createBitmap(spacingPx, spacingPx, Bitmap.Config.ARGB_8888)
-                val androidCanvas = android.graphics.Canvas(tile)
-                val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    color = gridColor.copy(alpha = 0.50f).toArgb()
-                    style = Paint.Style.FILL
-                }
-                androidCanvas.drawCircle(
-                    spacingPx * 0.5f,
-                    spacingPx * 0.5f,
-                    radiusPx,
-                    paint
-                )
-                val shader = BitmapShader(tile, Shader.TileMode.REPEAT, Shader.TileMode.REPEAT)
-                val brush = ShaderBrush(shader)
-                onDrawBehind {
-                    drawRect(brush = brush)
+    when (settings.uiBackgroundMode) {
+        UiBackgroundMode.DOT_MATRIX -> {
+            val baseColor = remember(settings.amoledBlackEnabled, settings.dotMatrixBgHex, themeBg) {
+                when {
+                    settings.amoledBlackEnabled -> Color.Black
+                    settings.dotMatrixBgHex != 0L -> Color(settings.dotMatrixBgHex)
+                    else -> themeBg
                 }
             }
-    )
+            val effectiveDotColor = remember(baseColor, dotStyle.dotGridColor, settings.dotMatrixBgHex) {
+                if (settings.dotMatrixBgHex == 0L) {
+                    dotStyle.dotGridColor
+                } else if (baseColor.luminance() < 0.45f) {
+                    Color.White.copy(alpha = 0.16f)
+                } else {
+                    Color.Black.copy(alpha = 0.14f)
+                }
+            }
+
+            if (settings.dotMatrixEnabled) {
+                Box(
+                    modifier = modifier
+                        .fillMaxSize()
+                        .background(baseColor)
+                        .drawWithCache {
+                            val spacingPx = (32f - densityFactor * 14f)
+                                .coerceIn(14f, 34f)
+                                .dp
+                                .toPx()
+                                .roundToInt()
+                                .coerceAtLeast(8)
+                            val radiusPx = (1.1f + densityFactor * 0.6f).dp.toPx()
+
+                            val tile = Bitmap.createBitmap(spacingPx, spacingPx, Bitmap.Config.ARGB_8888)
+                            val androidCanvas = android.graphics.Canvas(tile)
+                            val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                                color = effectiveDotColor.copy(alpha = 0.50f).toArgb()
+                                style = Paint.Style.FILL
+                            }
+                            androidCanvas.drawCircle(
+                                spacingPx * 0.5f,
+                                spacingPx * 0.5f,
+                                radiusPx,
+                                paint
+                            )
+                            val shader = BitmapShader(tile, Shader.TileMode.REPEAT, Shader.TileMode.REPEAT)
+                            val brush = ShaderBrush(shader)
+                            onDrawBehind {
+                                drawRect(brush = brush)
+                            }
+                        }
+                )
+            } else {
+                Box(
+                    modifier = modifier
+                        .fillMaxSize()
+                        .background(baseColor)
+                )
+            }
+        }
+
+        UiBackgroundMode.COLOR_PLATE -> {
+            if (settings.colorPlateStyle == ColorPlateStyle.SOLID) {
+                val solidColor = if (settings.amoledBlackEnabled) Color.Black else Color(settings.solidBgHex)
+                Box(
+                    modifier = modifier
+                        .fillMaxSize()
+                        .background(solidColor)
+                )
+            } else {
+                val startColor = Color(settings.gradientStartHex)
+                val endColor = if (settings.amoledBlackEnabled) Color.Black else Color(settings.gradientEndHex)
+                Box(
+                    modifier = modifier
+                        .fillMaxSize()
+                        .drawWithCache {
+                            val gradientBrush = Brush.verticalGradient(
+                                colors = listOf(startColor, endColor)
+                            )
+                            onDrawBehind {
+                                drawRect(brush = gradientBrush)
+                            }
+                        }
+                )
+            }
+        }
+
+        UiBackgroundMode.WALLPAPER -> {
+            val context = LocalContext.current
+            val wallpaperPath = settings.wallpaperPath
+            val wallpaperFile = remember(wallpaperPath) {
+                wallpaperPath?.let { File(it) }?.takeIf { it.exists() }
+            }
+            Box(
+                modifier = modifier
+                    .fillMaxSize()
+                    .background(if (settings.amoledBlackEnabled) Color.Black else themeBg)
+            ) {
+                if (wallpaperFile != null) {
+                    val request = remember(wallpaperPath) {
+                        ImageRequest.Builder(context)
+                            .data(wallpaperFile)
+                            .size(1080, 1920)
+                            .crossfade(false)
+                            .build()
+                    }
+                    AsyncImage(
+                        model = request,
+                        contentDescription = "Custom UI wallpaper",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = settings.wallpaperDimStrength))
+                    )
+                } else {
+                    val fallbackStart = Color(settings.gradientStartHex)
+                    val fallbackEnd = if (settings.amoledBlackEnabled) Color.Black else Color(settings.gradientEndHex)
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Brush.verticalGradient(listOf(fallbackStart, fallbackEnd)))
+                    )
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -132,17 +239,17 @@ fun NothingSurfaceCard(
 ) {
     val style = LocalDotDialStyle.current
     val borderColor = if (highlighted) MaterialTheme.colorScheme.primary else style.hairlineBorder
-    val containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.94f)
+    val containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.92f)
 
     Surface(
         modifier = modifier.then(
             if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier
         ),
-        shape = RoundedCornerShape(22.dp),
+        shape = CardCornerShape,
         color = containerColor,
         contentColor = MaterialTheme.colorScheme.onSurface,
         border = BorderStroke(1.dp, borderColor),
-        tonalElevation = if (highlighted) 4.dp else 1.dp
+        tonalElevation = 0.dp
     ) {
         content()
     }
@@ -156,6 +263,7 @@ fun ContactAvatarCircle(
     highlighted: Boolean = false,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     val borderColor = if (highlighted) {
         MaterialTheme.colorScheme.primary
     } else {
@@ -171,8 +279,15 @@ fun ContactAvatarCircle(
         contentAlignment = Alignment.Center
     ) {
         if (!photoUri.isNullOrBlank()) {
+            val imageRequest = remember(photoUri) {
+                ImageRequest.Builder(context)
+                    .data(Uri.parse(photoUri))
+                    .size(128)
+                    .crossfade(false)
+                    .build()
+            }
             AsyncImage(
-                model = Uri.parse(photoUri),
+                model = imageRequest,
                 contentDescription = "$name photo",
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()

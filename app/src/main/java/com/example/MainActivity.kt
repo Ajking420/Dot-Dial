@@ -93,7 +93,7 @@ import androidx.navigation.compose.rememberNavController
 import com.example.data.ai.configureAppCheck
 import com.example.telecom.CallDisplayMode
 import com.example.telecom.CallLifecycleState
-import com.example.ui.components.DotMatrixCanvasBackdrop
+import com.example.ui.components.DotDialBackgroundHost
 import com.example.ui.screens.ActiveCallOverlay
 import com.example.ui.screens.AiCommandBottomSheet
 import com.example.ui.screens.AnalyticsScreen
@@ -364,7 +364,7 @@ private fun DotDialAppRoot(
             val useRail = maxWidth >= 600.dp
 
             Box(modifier = Modifier.fillMaxSize()) {
-                DotMatrixCanvasBackdrop()
+                DotDialBackgroundHost(settings = settings)
 
                 Row(modifier = Modifier.fillMaxSize()) {
                     if (useRail) {
@@ -513,6 +513,7 @@ private fun DotDialAppRoot(
                                         contacts = contacts,
                                         searchQuery = contactSearch,
                                         vibrationPatterns = vibrationPatterns,
+                                        showQuickActions = settings.showContactQuickActions,
                                         googleSyncEnabled = settings.googleSyncEnabled,
                                         discoveredGoogleAccounts = discoveredGoogleAccounts,
                                         syncedGoogleAccounts = settings.syncedGoogleAccounts,
@@ -524,7 +525,11 @@ private fun DotDialAppRoot(
                                         onCallContact = { contact ->
                                             viewModel.placeCall(contact.phoneNumber, contact)
                                         },
-                                        onSaveContact = { id, name, phone, company, email, notes, fav, photo, card, video, vibId ->
+                                        onCallNumber = { number, contact ->
+                                            viewModel.placeCall(number, contact)
+                                        },
+                                        onSetDefaultNumber = viewModel::setDefaultContactNumber,
+                                        onSaveContact = { id, name, phone, company, email, notes, fav, photo, card, video, vibId, extraJson ->
                                             viewModel.saveContact(
                                                 existingId = id,
                                                 name = name,
@@ -536,7 +541,8 @@ private fun DotDialAppRoot(
                                                 photoUri = photo,
                                                 callingCardUri = card,
                                                 videoBackdropUri = video,
-                                                vibrationPatternId = vibId
+                                                vibrationPatternId = vibId,
+                                                additionalNumbersJson = extraJson
                                             )
                                         },
                                         onToggleFavorite = viewModel::toggleFavorite,
@@ -599,6 +605,7 @@ private fun DotDialAppRoot(
                                         onSetAdaptiveRefreshRate = viewModel::setAdaptiveRefreshRate,
                                         onSetUltraSmoothMode = viewModel::setUltraSmoothMode,
                                         onSetUiSounds = viewModel::setUiSoundsEnabled,
+                                        onSetDialpadSoundStyle = viewModel::setDialpadSoundStyle,
                                         onSetAudioOutputMode = viewModel::setAudioOutputMode,
                                         onPickCustomRingtone = viewModel::setCustomRingtoneUri,
                                         onPickDefaultVideo = viewModel::setDefaultVideoBackdrop,
@@ -611,6 +618,15 @@ private fun DotDialAppRoot(
                                         onSetSilentRecording = viewModel::setSilentCallRecording,
                                         onSetAutoSummarize = viewModel::setAutoSummarizeEnabled,
                                         onSetVoiceControl = viewModel::setVoiceCommandControl,
+                                        onSetShowContactQuickActions = viewModel::setShowContactQuickActions,
+                                        onSelectBackgroundMode = viewModel::setUiBackgroundMode,
+                                        onToggleDotMatrix = viewModel::setDotMatrixEnabled,
+                                        onSelectDotMatrixBgHex = viewModel::setDotMatrixBgHex,
+                                        onSelectColorPlateStyle = viewModel::setColorPlateStyle,
+                                        onSelectSolidBgHex = viewModel::setSolidBgHex,
+                                        onSelectGradientColors = viewModel::setGradientColors,
+                                        onPickWallpaper = viewModel::setWallpaperUri,
+                                        onWallpaperDimChange = viewModel::setWallpaperDimStrength,
                                         onSetVaultPin = viewModel::setVaultPin,
                                         onExportBackupJson = viewModel::exportBackupJson,
                                         onExportContactsVcf = viewModel::exportContactsVcf,

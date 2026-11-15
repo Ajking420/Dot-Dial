@@ -23,8 +23,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.automirrored.filled.Message
@@ -48,6 +50,7 @@ import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -62,6 +65,7 @@ import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -80,6 +84,8 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.example.R
 import com.example.data.local.ContactEntity
+import com.example.data.local.ContactNumbersCodec
+import com.example.data.local.ContactPhoneNumber
 import com.example.data.local.VibrationPatternEntity
 import com.example.data.system.T9Utils
 import com.example.ui.components.ContactAvatarCircle
@@ -101,6 +107,7 @@ fun ContactsScreen(
     searchQuery: String,
     vibrationPatterns: List<VibrationPatternEntity>,
     googleSyncEnabled: Boolean,
+    showQuickActions: Boolean,
     discoveredGoogleAccounts: List<String>,
     syncedGoogleAccounts: Set<String>,
     onSearchChange: (String) -> Unit,
@@ -109,6 +116,8 @@ fun ContactsScreen(
     onAddGoogleAccount: (String) -> Unit,
     onRemoveGoogleAccount: (String) -> Unit,
     onCallContact: (ContactEntity) -> Unit,
+    onCallNumber: (String, ContactEntity) -> Unit,
+    onSetDefaultNumber: (ContactEntity, ContactPhoneNumber) -> Unit,
     onSaveContact: (
         existingId: Long?,
         name: String,
@@ -120,7 +129,8 @@ fun ContactsScreen(
         photoUri: String?,
         callingCardUri: String?,
         videoUri: String?,
-        vibrationId: Long
+        vibrationId: Long,
+        additionalNumbersJson: String
     ) -> Unit,
     onToggleFavorite: (ContactEntity) -> Unit,
     onToggleBlocked: (ContactEntity) -> Unit,
@@ -341,6 +351,9 @@ fun ContactsScreen(
                     contentType = { "contact_row" }
                 ) { contact ->
                     val patternName = patternNameById[contact.vibrationPatternId] ?: "GLYPH PULSE"
+                    val extraCount = remember(contact.additionalNumbersJson) {
+                        ContactNumbersCodec.decode(contact.additionalNumbersJson).size
+                    }
                     NothingSurfaceCard(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -373,7 +386,8 @@ fun ContactsScreen(
                                             style = MaterialTheme.typography.titleMedium,
                                             color = MaterialTheme.colorScheme.onSurface,
                                             maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(1f, fill = false)
                                         )
                                         if (contact.callingCardUri != null) {
                                             Spacer(modifier = Modifier.width(6.dp))
@@ -404,9 +418,15 @@ fun ContactsScreen(
                                         }
                                     }
                                     Text(
-                                        text = contact.phoneNumber,
+                                        text = if (extraCount > 0) {
+                                            "${contact.phoneNumber}  (+$extraCount more)"
+                                        } else {
+                                            contact.phoneNumber
+                                        },
                                         style = MaterialTheme.typography.labelMedium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                     Text(
                                         text = if (contact.accountName.isNotBlank()) {
@@ -462,16 +482,20 @@ fun ContactsScreen(
         ) {
             GoogleStyleContactDetailSheet(
                 contact = refreshedDetail,
-                onCall = {
+                showQuickActions = showQuickActions,
+                onCallNumber = { numberToDial ->
                     detailContact = null
-                    onCallContact(refreshedDetail)
+                    onCallNumber(numberToDial, refreshedDetail)
                 },
-                onSms = {
-                    val uri = Uri.parse("smsto:${refreshedDetail.phoneNumber}")
+                onSetDefaultNumber = { entry ->
+                    onSetDefaultNumber(refreshedDetail, entry)
+                },
+                onSms = { numberForSms ->
+                    val uri = Uri.parse("smsto:$numberForSms")
                     runCatching { context.startActivity(Intent(Intent.ACTION_SENDTO, uri)) }
                 },
-                onWhatsApp = {
-                    val digits = T9Utils.normalizePhone(refreshedDetail.phoneNumber).filter { it.isDigit() }
+                onWhatsApp = { numberForWa ->
+                    val digits = T9Utils.normalizePhone(numberForWa).filter { it.isDigit() }
                     val waIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/$digits"))
                     runCatching { context.startActivity(waIntent) }
                 },
@@ -571,7 +595,7 @@ fun ContactsScreen(
                     onDeleteContact(id)
                     editingContact = null
                 },
-                onSave = { name, phone, company, email, notes, isFav, vibId ->
+                onSave = { name, phone, company, email, notes, isFav, vibId, extraJson ->
                     onSaveContact(
                         current?.id,
                         name,
@@ -583,7 +607,8 @@ fun ContactsScreen(
                         current?.photoUri,
                         current?.callingCardUri,
                         current?.videoBackdropUri,
-                        vibId
+                        vibId,
+                        extraJson
                     )
                     showCreateDialog = false
                     editingContact = null
@@ -596,18 +621,28 @@ fun ContactsScreen(
 @Composable
 private fun GoogleStyleContactDetailSheet(
     contact: ContactEntity,
-    onCall: () -> Unit,
-    onSms: () -> Unit,
-    onWhatsApp: () -> Unit,
+    showQuickActions: Boolean,
+    onCallNumber: (String) -> Unit,
+    onSetDefaultNumber: (ContactPhoneNumber) -> Unit,
+    onSms: (String) -> Unit,
+    onWhatsApp: (String) -> Unit,
     onGmail: () -> Unit,
     onPickPhoto: () -> Unit,
     onPickCallingCard: () -> Unit,
     onPickVideo: () -> Unit,
     onEdit: () -> Unit
 ) {
+    val allNumbers = remember(contact.phoneNumber, contact.additionalNumbersJson) {
+        contact.allPhoneNumbers()
+    }
+    var selectedNumber by remember(contact.id, contact.phoneNumber) {
+        mutableStateOf(contact.phoneNumber)
+    }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
@@ -659,7 +694,7 @@ private fun GoogleStyleContactDetailSheet(
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = contact.phoneNumber,
+                        text = selectedNumber,
                         style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.primary
                     )
@@ -674,39 +709,118 @@ private fun GoogleStyleContactDetailSheet(
             }
         }
 
-        // Google Contacts-style Direct Action Bar: Call, Message, WhatsApp, Gmail
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceEvenly
-        ) {
-            ContactQuickActionOrb(
-                icon = Icons.Default.Call,
-                label = "CALL",
-                primary = true,
-                onClick = onCall,
-                testTag = "contact_detail_call"
-            )
-            ContactQuickActionOrb(
-                icon = Icons.AutoMirrored.Filled.Message,
-                label = "MESSAGE",
-                primary = false,
-                onClick = onSms,
-                testTag = "contact_detail_sms"
-            )
-            ContactQuickActionOrb(
-                icon = Icons.AutoMirrored.Filled.Chat,
-                label = "WHATSAPP",
-                primary = false,
-                onClick = onWhatsApp,
-                testTag = "contact_detail_whatsapp"
-            )
-            ContactQuickActionOrb(
-                icon = Icons.Default.Email,
-                label = "GMAIL",
-                primary = false,
-                onClick = onGmail,
-                testTag = "contact_detail_gmail"
-            )
+        // Google Contacts-style Direct Action Bar: Call + Toggleable SMS, WhatsApp, Gmail
+        if (showQuickActions) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
+                ContactQuickActionOrb(
+                    icon = Icons.Default.Call,
+                    label = "CALL",
+                    primary = true,
+                    onClick = { onCallNumber(selectedNumber) },
+                    testTag = "contact_detail_call"
+                )
+                ContactQuickActionOrb(
+                    icon = Icons.AutoMirrored.Filled.Message,
+                    label = "SMS",
+                    primary = false,
+                    onClick = { onSms(selectedNumber) },
+                    testTag = "contact_detail_sms"
+                )
+                ContactQuickActionOrb(
+                    icon = Icons.AutoMirrored.Filled.Chat,
+                    label = "WHATSAPP",
+                    primary = false,
+                    onClick = { onWhatsApp(selectedNumber) },
+                    testTag = "contact_detail_whatsapp"
+                )
+                ContactQuickActionOrb(
+                    icon = Icons.Default.Email,
+                    label = "GMAIL",
+                    primary = false,
+                    onClick = onGmail,
+                    testTag = "contact_detail_gmail"
+                )
+            }
+        } else {
+            Button(
+                onClick = { onCallNumber(selectedNumber) },
+                shape = RoundedCornerShape(50),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+                    .testTag("contact_detail_call")
+            ) {
+                Icon(Icons.Default.Call, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("CALL $selectedNumber", style = MaterialTheme.typography.labelLarge)
+            }
+        }
+
+        // All Phone Numbers for this person (with Set Default & 1-tap Call)
+        NothingSurfaceCard(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = if (allNumbers.size > 1) "PHONE NUMBERS (${allNumbers.size})" else "PHONE NUMBER",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                allNumbers.forEachIndexed { index, entry ->
+                    if (index > 0) {
+                        HorizontalDivider(color = LocalDotDialStyle.current.hairlineBorder)
+                    }
+                    val isSelected = selectedNumber == entry.number
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable { selectedNumber = entry.number }
+                            .padding(vertical = 4.dp, horizontal = 4.dp)
+                            .testTag("contact_detail_number_$index"),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = entry.number,
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = if (entry.isDefault) "${entry.label} • Default" else entry.label,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (!entry.isDefault) {
+                                TextButton(onClick = { onSetDefaultNumber(entry) }) {
+                                    Text("DEFAULT", style = MaterialTheme.typography.labelSmall)
+                                }
+                            }
+                            IconButton(
+                                onClick = { onCallNumber(entry.number) },
+                                modifier = Modifier.minimumInteractiveComponentSize()
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Call,
+                                    contentDescription = "Call ${entry.number}",
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         // Calling Card & Media Customization Buttons
@@ -975,10 +1089,15 @@ private fun ContactEditorSheetContent(
     onToggleBlocked: (ContactEntity) -> Unit,
     onAssignVibration: (ContactEntity, Long) -> Unit,
     onDelete: (Long) -> Unit,
-    onSave: (String, String, String, String, String, Boolean, Long) -> Unit
+    onSave: (String, String, String, String, String, Boolean, Long, String) -> Unit
 ) {
     var name by remember(initialContact) { mutableStateOf(initialContact?.name.orEmpty()) }
     var phone by remember(initialContact) { mutableStateOf(initialContact?.phoneNumber.orEmpty()) }
+    val extraNumbers = remember(initialContact) {
+        mutableStateListOf<ContactPhoneNumber>().apply {
+            initialContact?.additionalNumbersJson?.let { addAll(ContactNumbersCodec.decode(it)) }
+        }
+    }
     var company by remember(initialContact) { mutableStateOf(initialContact?.company.orEmpty()) }
     var email by remember(initialContact) { mutableStateOf(initialContact?.email.orEmpty()) }
     var notes by remember(initialContact) { mutableStateOf(initialContact?.notes.orEmpty()) }
@@ -990,6 +1109,7 @@ private fun ContactEditorSheetContent(
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
@@ -1027,10 +1147,44 @@ private fun ContactEditorSheetContent(
         OutlinedTextField(
             value = phone,
             onValueChange = { phone = it },
-            label = { Text("Phone Number") },
+            label = { Text("Default Phone Number") },
             singleLine = true,
             modifier = Modifier.fillMaxWidth().testTag("contact_phone_input")
         )
+        extraNumbers.forEachIndexed { index, extra ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedTextField(
+                    value = extra.number,
+                    onValueChange = { updated ->
+                        extraNumbers[index] = extra.copy(number = updated)
+                    },
+                    label = { Text("${extra.label} Number") },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f)
+                )
+                IconButton(
+                    onClick = { extraNumbers.removeAt(index) },
+                    modifier = Modifier.minimumInteractiveComponentSize()
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Remove extra number",
+                        tint = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+        }
+        TextButton(
+            onClick = { extraNumbers.add(ContactPhoneNumber("", "Other")) }
+        ) {
+            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+            Spacer(modifier = Modifier.width(4.dp))
+            Text("ADD ANOTHER NUMBER", style = MaterialTheme.typography.labelSmall)
+        }
         OutlinedTextField(
             value = email,
             onValueChange = { email = it },
@@ -1144,7 +1298,18 @@ private fun ContactEditorSheetContent(
 
         Spacer(modifier = Modifier.height(6.dp))
         Button(
-            onClick = { onSave(name, phone, company, email, notes, isFav, selectedVibId) },
+            onClick = {
+                onSave(
+                    name,
+                    phone,
+                    company,
+                    email,
+                    notes,
+                    isFav,
+                    selectedVibId,
+                    ContactNumbersCodec.encode(extraNumbers)
+                )
+            },
             colors = ButtonDefaults.buttonColors(
                 containerColor = MaterialTheme.colorScheme.primary,
                 contentColor = MaterialTheme.colorScheme.onPrimary

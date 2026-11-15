@@ -43,6 +43,7 @@ class BackupExportManager(
                         put("isBlocked", c.isBlocked)
                         put("notes", c.notes)
                         put("accountName", c.accountName)
+                        put("additionalNumbersJson", c.additionalNumbersJson)
                     }
                 )
             }
@@ -85,7 +86,9 @@ class BackupExportManager(
                     appendLine("BEGIN:VCARD")
                     appendLine("VERSION:3.0")
                     appendLine("FN:${c.name}")
-                    appendLine("TEL;TYPE=CELL:${c.phoneNumber}")
+                    c.allPhoneNumbers().forEach { entry ->
+                        appendLine("TEL;TYPE=${entry.label.uppercase()}:${entry.number}")
+                    }
                     if (c.email.isNotBlank()) appendLine("EMAIL:${c.email}")
                     if (c.company.isNotBlank()) appendLine("ORG:${c.company}")
                     appendLine("END:VCARD")
@@ -132,7 +135,8 @@ class BackupExportManager(
                         isFavorite = obj.optBoolean("isFavorite", false),
                         isBlocked = obj.optBoolean("isBlocked", false),
                         notes = obj.optString("notes"),
-                        accountName = obj.optString("accountName")
+                        accountName = obj.optString("accountName"),
+                        additionalNumbersJson = obj.optString("additionalNumbersJson", "[]").ifBlank { "[]" }
                     )
                 )
                 contactsRestored++
