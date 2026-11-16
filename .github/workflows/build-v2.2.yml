@@ -1,0 +1,51 @@
+name: Dot Dial v2.2 Android APK
+
+on:
+  push:
+    paths:
+      - "source-v2.2.zip"
+      - ".github/workflows/build-v2.2.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify v2.2 source archive
+        run: |
+          test -f source-v2.2.zip || { echo "::error::Upload source-v2.2.zip (the updated v2.2 source with the scroll fix) to the repository root."; exit 1; }
+          mkdir source-v2.2
+          unzip -q source-v2.2.zip -d source-v2.2
+          test -f source-v2.2/app/build.gradle.kts
+          grep -q 'versionName = "2.2"' source-v2.2/app/build.gradle.kts || { echo "::error::Archive is not version 2.2; refusing to build."; exit 1; }
+          grep -q 'versionCode = 7' source-v2.2/app/build.gradle.kts || { echo "::error::Unexpected versionCode; refusing to build."; exit 1; }
+          grep -q 'targetFps' source-v2.2/app/src/main/java/com/example/MainActivity.kt || { echo "::error::Expected scroll refresh-rate fix source was not found."; exit 1; }
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle 9.3.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.3.1"
+
+      - name: Build debug APK
+        working-directory: source-v2.2
+        run: gradle --no-daemon :app:assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Dot-Dial-v2.2-scroll-fix-debug-apk
+          path: source-v2.2/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
