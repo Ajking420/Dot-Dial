@@ -61,13 +61,10 @@ jobs:
         with:
           gradle-version: '9.3.1'
 
-      - name: Install Android 17 SDK and prepare API 37 alias
+      - name: Install Android 16 QPR2 SDK (API 36.1)
         run: |
           for i in $(seq 1 30); do echo y; done | sdkmanager --licenses
-          sdkmanager --install "platforms;android-37.0" "build-tools;36.0.0" --channel=3
-          if [ ! -e "$ANDROID_HOME/platforms/android-37" ]; then
-            ln -s android-37.0 "$ANDROID_HOME/platforms/android-37"
-          fi
+          sdkmanager --install "platforms;android-36.1" "build-tools;36.0.0"
 
       - name: Build v2.2 release APK
         env:
