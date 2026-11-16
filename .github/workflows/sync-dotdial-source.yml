@@ -1,0 +1,52 @@
+name: Sync canonical DotDial v2.2 source
+
+on:
+  push:
+    paths:
+      - ".github/workflows/sync-dotdial-source.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract canonical v2.2 source archive
+        run: |
+          set -euo pipefail
+          SOURCE_ZIP="DotDial_v2.2_scroll_performance_fixed_source.zip"
+          test -f "$SOURCE_ZIP" || { echo "::error::Canonical v2.2 source archive is missing"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/dotdial-v22"
+          unzip -oq "$SOURCE_ZIP" -d "$RUNNER_TEMP/dotdial-v22"
+          test -f "$RUNNER_TEMP/dotdial-v22/app/build.gradle.kts"
+          grep -q 'versionCode = 8' "$RUNNER_TEMP/dotdial-v22/app/build.gradle.kts"
+          grep -q 'versionName = "2.2"' "$RUNNER_TEMP/dotdial-v22/app/build.gradle.kts"
+          rm -rf app gradle
+          cp -a "$RUNNER_TEMP/dotdial-v22/app" ./app
+          cp -a "$RUNNER_TEMP/dotdial-v22/gradle" ./gradle
+          cp "$RUNNER_TEMP/dotdial-v22/build.gradle.kts" ./build.gradle.kts
+          cp "$RUNNER_TEMP/dotdial-v22/settings.gradle.kts" ./settings.gradle.kts
+          cp "$RUNNER_TEMP/dotdial-v22/gradle.properties" ./gradle.properties
+          cp "$RUNNER_TEMP/dotdial-v22/.env.example" ./.env.example
+          cp "$RUNNER_TEMP/dotdial-v22/metadata.json" ./metadata.json
+          cp "$RUNNER_TEMP/dotdial-v22/firebase-applet-config.json" ./firebase-applet-config.json
+
+      - name: Commit synced v2.2 source
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A app gradle build.gradle.kts settings.gradle.kts gradle.properties .env.example metadata.json firebase-applet-config.json
+          if git diff --cached --quiet; then
+            echo "The tracked source already matches the canonical v2.2 archive."
+            exit 0
+          fi
+          git commit -m "chore: sync canonical DotDial v2.2 source"
+          git push origin HEAD:main
