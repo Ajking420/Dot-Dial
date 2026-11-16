@@ -48,14 +48,14 @@ For real screenshots of the dial pad, contacts, settings and in-call screens, ad
 Use the **Releases** page for installable APKs:
 
 - [Open Dot Dial releases](https://github.com/Ajking420/Dot-Dial/releases)
-- The [v2.2 scroll-fixed APK release](https://github.com/Ajking420/Dot-Dial/releases/tag/v2.2-scroll-fixed) is published from the already-tested GitHub Actions artifact by the `Publish DotDial v2.2 APK` workflow.
+- The [Dot Dial v2.2 Stable APK](https://github.com/Ajking420/Dot-Dial/releases/tag/v2.2-stable) is published from the successful GitHub Actions build using the persistent release-signing key.
 
 Install only APKs you trust. Android may ask you to allow installation from the browser or file manager used to open the APK.
 
 ## Source code and build
 
 - **Canonical v2.2 source archive:** [DotDial_v2.2_scroll_performance_fixed_source.zip](./DotDial_v2.2_scroll_performance_fixed_source.zip)
-- **Build workflow:** [Build DotDial v2.2 scroll-fixed APK](./.github/workflows/build-dotdial-apk.yml)
+- **Build workflow:** [Build DotDial v2.2 release APK](./.github/workflows/build-dotdial-apk.yml)
 - **Scroll fix notes:** [SCROLL_PERFORMANCE_FIX.md](./SCROLL_PERFORMANCE_FIX.md) (inside the source archive)
 
 The build workflow extracts the v2.2 archive, checks the version metadata and builds the release APK with Gradle. Run it from the **Actions** tab in GitHub.
@@ -69,11 +69,11 @@ The build workflow extracts the v2.2 archive, checks the version metadata and bu
 - A configured Gemini API key for AI features where required
 - A persistent signing keystore for repeatable distribution builds
 
-**Signing note:** Android updates must be signed with the same signing certificate as the installed app. Do not generate a fresh signing key for every release. The current tested v2.2 APK has a Firebase-registered signing fingerprint; preserve that signing identity for future updates.
+**Signing note:** Android updates must be signed with the same signing certificate as the installed app. Do not generate a fresh signing key for every release. The v2.2 Stable APK is signed with the persistent Dot Dial release key. Its certificate SHA-1 has been registered in Firebase. Preserve this exact signing identity for future updates.
 
 ## Version notes
 
-See [CHANGELOG.md](./CHANGELOG.md) for the v2.2 scroll-performance update and release notes.
+See [CHANGELOG.md](./CHANGELOG.md) for the v2.2 Stable release notes.
 
 ## Privacy and permissions
 
