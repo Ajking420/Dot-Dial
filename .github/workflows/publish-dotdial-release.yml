@@ -49,5 +49,6 @@ jobs:
           gh release upload v2.2-scroll-fixed "$APK_PATH" \
             --repo "$GITHUB_REPOSITORY" \
             --clobber
-          RELEASE_ID="$(gh api "/repos/$GITHUB_REPOSITORY/releases/tags/v2.2-scroll-fixed" --jq '.id')"
+          RELEASE_ID="$(gh api "/repos/$GITHUB_REPOSITORY/releases" --jq '.[] | select(.tag_name == "v2.2-scroll-fixed") | .id' | head -n 1)"
+          test -n "$RELEASE_ID" || { echo "::error::Draft release ID not found"; exit 1; }
           gh api --method PATCH "/repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" -F draft=false
