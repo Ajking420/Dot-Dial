@@ -48,7 +48,7 @@ For real screenshots of the dial pad, contacts, settings and in-call screens, ad
 Use the **Releases** page for installable APKs:
 
 - [Open Dot Dial releases](https://github.com/Ajking420/Dot-Dial/releases)
-- The v2.2 scroll-fixed APK is being published from the already-tested GitHub Actions artifact by the `Publish DotDial v2.2 APK` workflow.
+- The [v2.2 scroll-fixed APK release](https://github.com/Ajking420/Dot-Dial/releases/tag/v2.2-scroll-fixed) is published from the already-tested GitHub Actions artifact by the `Publish DotDial v2.2 APK` workflow.
 
 Install only APKs you trust. Android may ask you to allow installation from the browser or file manager used to open the APK.
 
