@@ -1,12 +1,12 @@
-name: Publish DotDial v2.2-scroll-fixed APK
+name: Publish Dot Dial v2.2 Stable APK
 
 on:
   workflow_dispatch:
     inputs:
       build_run_id:
-        description: "Successful build run ID containing Dot-Dial-v2.2-scroll-fixed"
-        required: true
-        default: "43873234625"
+        description: "Optional successful build run ID. Leave empty to use the latest successful v2.2 build."
+        required: false
+        type: string
   push:
     paths:
       - ".github/workflows/publish-dotdial-release.yml"
@@ -19,10 +19,31 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
-      - name: Download the already-tested v2.2-scroll-fixed build artifact
+      - name: Find the successful v2.2 build artifact
         env:
           GH_TOKEN: ${{ github.token }}
-          BUILD_RUN_ID: ${{ inputs.build_run_id || '43873234625' }}
+          INPUT_BUILD_RUN_ID: ${{ inputs.build_run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUILD_RUN_ID="$INPUT_BUILD_RUN_ID"
+          if [ -z "$BUILD_RUN_ID" ]; then
+            BUILD_RUN_ID="$(gh run list \
+              --repo "$GITHUB_REPOSITORY" \
+              --workflow build-dotdial-apk.yml \
+              --branch main \
+              --status success \
+              --limit 1 \
+              --json databaseId \
+              --jq '.[0].databaseId')"
+          fi
+          test -n "$BUILD_RUN_ID" || { echo "::error::No successful v2.2 build run was found."; exit 1; }
+          echo "Using successful build run: $BUILD_RUN_ID"
+          echo "BUILD_RUN_ID=$BUILD_RUN_ID" >> "$GITHUB_ENV"
+
+      - name: Download the successful v2.2 APK artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           mkdir -p dist
@@ -30,25 +51,44 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --name "Dot-Dial-v2.2-scroll-fixed" \
             --dir dist
-          APK="$(find dist -type f -name '*.apk' -print -quit)"
-          test -n "$APK" || { echo "::error::APK not found in the selected build artifact"; exit 1; }
-          echo "APK_PATH=$APK" >> "$GITHUB_ENV"
+          APK_PATH="$(find dist -type f -name '*.apk' -print -quit)"
+          test -n "$APK_PATH" || { echo "::error::APK was not found in the build artifact."; exit 1; }
+          echo "APK_PATH=$APK_PATH" >> "$GITHUB_ENV"
+          echo "APK_SHA256=$(sha256sum "$APK_PATH" | cut -d ' ' -f 1)" >> "$GITHUB_ENV"
 
-      - name: Create v2.2-scroll-fixed release and attach APK
+      - name: Publish Dot Dial v2.2 Stable release
         env:
           GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
           set -euo pipefail
-          if ! gh release view v2.2-scroll-fixed --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release create v2.2-scroll-fixed \
+          TAG="v2.2-stable"
+          TITLE="Dot Dial v2.2 — Stable"
+          NOTES="$(cat <<'EOF'
+          Stable v2.2 release of Dot Dial.
+
+          - Includes the v2.2 scrolling-performance fix and display refresh-rate selection improvements.
+          - Signed with the persistent Dot Dial release key for consistent future Android updates.
+          - The permanent signing certificate SHA-1 has been registered in Firebase for Google Sign-In.
+
+          **Installation note:** This APK may not install over an older copy signed with a different certificate. Back up app data before uninstalling an older installation. Verify Google Sign-In on-device after installing this release.
+          EOF
+          )"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$APK_PATH" --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TITLE" --notes "$NOTES"
+          else
+            gh release create "$TAG" "$APK_PATH" \
               --repo "$GITHUB_REPOSITORY" \
-              --draft \
-              --title "Dot Dial v2.2 — Scroll Fixed" \
-              --notes "Dot Dial v2.2 release. Includes the tested scroll-performance fix. Google Sign-In was verified after registering this APK signing certificate in Firebase. Preserve the same signing key for future updates."
+              --title "$TITLE" \
+              --notes "$NOTES"
           fi
-          gh release upload v2.2-scroll-fixed "$APK_PATH" \
-            --repo "$GITHUB_REPOSITORY" \
-            --clobber
-          RELEASE_ID="$(gh api "/repos/$GITHUB_REPOSITORY/releases" --jq '.[] | select(.tag_name == "v2.2-scroll-fixed") | .id' | head -n 1)"
-          test -n "$RELEASE_ID" || { echo "::error::Draft release ID not found"; exit 1; }
-          gh api --method PATCH "/repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" -F draft=false
+          RELEASE_URL="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json url --jq '.url')"
+          {
+            echo "## Dot Dial v2.2 Stable published"
+            echo
+            echo "- Release: $RELEASE_URL"
+            echo "- APK: app-release.apk"
+            echo "- SHA-256: `$APK_SHA256`"
+            echo "- Source build run: $BUILD_RUN_ID"
+          } >> "$GITHUB_STEP_SUMMARY"
