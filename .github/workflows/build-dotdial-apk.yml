@@ -49,8 +49,13 @@ jobs:
         with:
           gradle-version: '9.3.1'
 
-      - name: Install Android SDK 36.1
-        run: sdkmanager "platforms;android-37" "build-tools;36.0.0"
+      - name: Install Android 17 SDK and prepare API 37 alias
+        run: |
+          for i in $(seq 1 30); do echo y; done | sdkmanager --licenses
+          sdkmanager --install "platforms;android-37.0" "build-tools;36.0.0" --channel=3
+          if [ ! -e "$ANDROID_HOME/platforms/android-37" ]; then
+            ln -s android-37.0 "$ANDROID_HOME/platforms/android-37"
+          fi
 
       - name: Build optimized release APK
         env:
