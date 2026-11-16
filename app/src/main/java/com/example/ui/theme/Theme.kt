@@ -1,5 +1,6 @@
 package com.example.ui.theme
 
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
@@ -10,6 +11,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
+import com.example.data.preferences.ColorPlateStyle
+import com.example.data.preferences.DialerSettings
+import com.example.data.preferences.UiBackgroundMode
 
 @Immutable
 data class DotDialExtendedStyle(
@@ -25,10 +29,12 @@ data class DotDialExtendedStyle(
 )
 
 val LocalDotDialStyle = staticCompositionLocalOf { DotDialExtendedStyle() }
+val LocalUiHapticPulse = staticCompositionLocalOf<() -> Unit> { {} }
 
 @Composable
 fun DotDialTheme(
     preset: DialerThemePreset = DialerThemePreset.NOTHING_DARK,
+    autoDayNightThemeEnabled: Boolean = false,
     amoledBlackEnabled: Boolean = false,
     dotDensity: Float = 0.65f,
     fontPreset: DialerFontPreset = DialerFontPreset.NOTHING_DOT,
@@ -42,16 +48,29 @@ fun DotDialTheme(
     customTextHex: Long = 0xFFF5F5F7L,
     content: @Composable () -> Unit
 ) {
-    val forceAmoledBg = amoledBlackEnabled && preset != DialerThemePreset.WHITE_RED && preset != DialerThemePreset.CHALK_MATRIX
+    val systemDark = isSystemInDarkTheme()
+    val effectivePreset = remember(preset, autoDayNightThemeEnabled, systemDark) {
+        if (!autoDayNightThemeEnabled) {
+            preset
+        } else if (systemDark) {
+            if (preset.isDark) preset else DialerThemePreset.NOTHING_DARK
+        } else {
+            if (!preset.isDark) preset else DialerThemePreset.WHITE_RED
+        }
+    }
+
+    val forceAmoledBg = amoledBlackEnabled &&
+        effectivePreset != DialerThemePreset.WHITE_RED &&
+        effectivePreset != DialerThemePreset.CHALK_MATRIX
 
     val colorScheme = remember(
-        preset,
+        effectivePreset,
         forceAmoledBg,
         customBgHex,
         customSurfaceHex,
         customAccentHex,
         customTextHex
-    ) { when (preset) {
+    ) { when (effectivePreset) {
         DialerThemePreset.NOTHING_DARK -> darkColorScheme(
             primary = NothingRed,
             onPrimary = ChalkWhite,
@@ -210,7 +229,7 @@ fun DotDialTheme(
 
     val isDark = colorScheme.background.luminance() < 0.45f
     val extended = remember(
-        preset,
+        effectivePreset,
         dotDensity,
         colorScheme,
         isDark,
@@ -219,7 +238,7 @@ fun DotDialTheme(
         coolJazzGlow
     ) {
         DotDialExtendedStyle(
-            preset = preset,
+            preset = effectivePreset,
             dotDensity = dotDensity,
             hairlineBorder = colorScheme.outline,
             dotGridColor = if (isDark) colorScheme.onSurface.copy(alpha = 0.16f) else colorScheme.onSurface.copy(alpha = 0.14f),
@@ -256,4 +275,57 @@ fun DotDialTheme(
             content = content
         )
     }
+}
+
+/**
+ * Computes whether system status bar (first) and navigation bar (second) should use dark icons
+ * based on the app's actual rendered top/bottom background luminance rather than system dark mode.
+ */
+fun resolveSystemBarsUseDarkIcons(
+    settings: DialerSettings,
+    themeBackground: Color,
+    isThemeDark: Boolean
+): Pair<Boolean, Boolean> {
+    val topDark: Boolean
+    val bottomDark: Boolean
+    when (settings.uiBackgroundMode) {
+        UiBackgroundMode.DOT_MATRIX -> {
+            val baseColor = when {
+                settings.amoledBlackEnabled && isThemeDark -> Color.Black
+                isThemeDark && settings.dotMatrixBgHex != 0L -> Color(settings.dotMatrixBgHex)
+                !isThemeDark && settings.autoDayNightThemeEnabled -> themeBackground
+                settings.dotMatrixBgHex != 0L -> Color(settings.dotMatrixBgHex)
+                else -> themeBackground
+            }
+            val dark = baseColor.luminance() < 0.45f
+            topDark = dark
+            bottomDark = dark
+        }
+        UiBackgroundMode.COLOR_PLATE -> {
+            if (settings.colorPlateStyle == ColorPlateStyle.SOLID) {
+                val solid = if (settings.amoledBlackEnabled) Color.Black else Color(settings.solidBgHex)
+                val dark = solid.luminance() < 0.45f
+                topDark = dark
+                bottomDark = dark
+            } else {
+                val startColor = Color(settings.gradientStartHex)
+                val endColor = if (settings.amoledBlackEnabled) Color.Black else Color(settings.gradientEndHex)
+                topDark = startColor.luminance() < 0.45f
+                bottomDark = endColor.luminance() < 0.45f
+            }
+        }
+        UiBackgroundMode.WALLPAPER -> {
+            if (!settings.wallpaperPath.isNullOrBlank()) {
+                val dark = isThemeDark || settings.wallpaperDimStrength >= 0.35f
+                topDark = dark
+                bottomDark = dark
+            } else {
+                val startColor = Color(settings.gradientStartHex)
+                val endColor = if (settings.amoledBlackEnabled) Color.Black else Color(settings.gradientEndHex)
+                topDark = startColor.luminance() < 0.45f
+                bottomDark = endColor.luminance() < 0.45f
+            }
+        }
+    }
+    return !topDark to !bottomDark
 }

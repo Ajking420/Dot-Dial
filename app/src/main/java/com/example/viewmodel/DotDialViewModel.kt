@@ -1,6 +1,7 @@
 package com.example.viewmodel
 
 import android.app.Application
+import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -9,7 +10,10 @@ import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.DotDialContainer
+import com.example.auth.GoogleSignInOutcome
+import com.example.auth.GoogleSignedInProfile
 import com.example.data.ai.AiCommandIntent
+import com.example.data.ai.AssistantReplyLanguage
 import com.example.data.local.CallDirection
 import com.example.data.local.CallLogEntity
 import com.example.data.local.CallRecordingEntity
@@ -18,14 +22,24 @@ import com.example.data.local.ContactNumbersCodec
 import com.example.data.local.ContactPhoneNumber
 import com.example.data.local.SpamRuleEntity
 import com.example.data.local.VibrationPatternEntity
+import com.example.data.preferences.AiAssistantLanguageMode
+import com.example.data.preferences.AiAssistantTriggerMode
 import com.example.data.preferences.AudioOutputMode
 import com.example.data.preferences.AutoRecordMode
+import com.example.data.preferences.CallerBackdropMode
 import com.example.data.preferences.ColorPlateStyle
 import com.example.data.preferences.DialerSettings
 import com.example.data.preferences.DialpadSoundStyle
+import com.example.data.preferences.NewContactStorageMode
 import com.example.data.preferences.UiBackgroundMode
+import com.example.data.preferences.VoiceChangerPreset
+import com.example.data.preferences.VoiceChangerSettingsMode
 import com.example.data.system.ActiveAudioRoute
+import com.example.data.system.DeviceNameHelper
+import com.example.data.system.DriveAuthorizationOutcome
+import com.example.data.system.GoogleDriveBackupManager
 import com.example.data.system.T9Utils
+import com.example.telecom.AiCallPhase
 import com.example.telecom.CallDisplayMode
 import com.example.telecom.CallLifecycleState
 import com.example.telecom.CallNotificationManager
@@ -67,13 +81,21 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
     private val recorder = container.audioRecorder
     private val gemini = container.geminiAi
     private val voice = container.voiceController
+    private val aiAssistantEngine = container.aiAssistantEngine
     private val contactsSync = container.contactsSync
     private val spamEngine = container.spamEngine
     private val uiSounds = container.uiSounds
     private val audioRoutes = container.audioRouteManager
     private val ringtonePlayer = container.ringtonePlayer
     private val backupManager = container.backupManager
+    private val driveBackup = container.driveBackupManager
+    private val signInManager = container.signInManager
+    private val voiceChangerEngine = container.voiceChangerEngine
     private var dtmfStopJob: Job? = null
+    private var aiAutoAnswerJob: Job? = null
+    private var aiConversationJob: Job? = null
+    private var cachedDriveToken: String? = null
+    private var pendingDriveAction: (() -> Unit)? = null
 
     private val _dialerQuery = MutableStateFlow("")
     val dialerQuery: StateFlow<String> = _dialerQuery.asStateFlow()
@@ -111,11 +133,21 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
     private val _discoveredGoogleAccounts = MutableStateFlow<List<String>>(emptyList())
     val discoveredGoogleAccounts: StateFlow<List<String>> = _discoveredGoogleAccounts.asStateFlow()
 
+    private val _driveUiState = MutableStateFlow(GoogleDriveUiState())
+    val driveUiState: StateFlow<GoogleDriveUiState> = _driveUiState.asStateFlow()
+
+    private val _googleAuthState = MutableStateFlow(GoogleAuthUiState())
+    val googleAuthState: StateFlow<GoogleAuthUiState> = _googleAuthState.asStateFlow()
+
     val settings: StateFlow<DialerSettings> = prefs.settingsFlow.stateIn(
         viewModelScope,
         SharingStarted.WhileSubscribed(5000),
         DialerSettings()
     )
+
+    val firstLaunchSignInReady: StateFlow<Boolean> = prefs.settingsFlow
+        .map { !it.hasPromptedGoogleSignIn && it.signedInGoogleEmail.isBlank() }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     val contacts: StateFlow<List<ContactEntity>> = db.contactDao().observeAll().stateIn(
         viewModelScope,
@@ -135,9 +167,40 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
     ) { logs, filter ->
         when (filter) {
             HistoryFilter.ALL -> logs
+            HistoryFilter.INCOMING -> logs.filter { it.direction == CallDirection.INCOMING }
+            HistoryFilter.OUTGOING -> logs.filter { it.direction == CallDirection.OUTGOING }
             HistoryFilter.MISSED -> logs.filter { it.direction == CallDirection.MISSED }
             HistoryFilter.SPAM -> logs.filter { it.isSpam || it.direction == CallDirection.BLOCKED_SPAM }
         }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val groupedHistory: StateFlow<List<PersonCallGroup>> = combine(
+        filteredHistory,
+        contacts
+    ) { logs, contactList ->
+        val lookup = T9Utils.buildNumberLookup(contactList)
+        val buckets = linkedMapOf<String, MutableList<CallLogEntity>>()
+        logs.forEach { log ->
+            val matched = lookup[log.normalizedNumber]
+            val key = matched?.id?.let { "contact_$it" }
+                ?: log.normalizedNumber.ifBlank { log.phoneNumber.trim().ifBlank { "log_${log.id}" } }
+            buckets.getOrPut(key) { mutableListOf() }.add(log)
+        }
+        buckets.map { (key, entries) ->
+            val sorted = entries.sortedByDescending { it.timestamp }
+            val latest = sorted.first()
+            val matched = lookup[latest.normalizedNumber]
+            PersonCallGroup(
+                groupKey = key,
+                displayName = matched?.name ?: latest.displayName.ifBlank { latest.phoneNumber },
+                phoneNumber = matched?.phoneNumber ?: latest.phoneNumber,
+                matchedContact = matched,
+                latestCall = latest,
+                calls = sorted,
+                callCount = sorted.size,
+                hasSpam = sorted.any { it.isSpam || it.direction == CallDirection.BLOCKED_SPAM }
+            )
+        }.sortedByDescending { it.latestCall.timestamp }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val recordings: StateFlow<List<CallRecordingEntity>> = db.recordingDao().observeAll().stateIn(
@@ -197,6 +260,12 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
 
     init {
         viewModelScope.launch {
+            signInManager.attemptSilentSignIn()?.let { profile ->
+                applySignedInProfile(profile, silent = true)
+            }
+        }
+
+        viewModelScope.launch {
             _discoveredGoogleAccounts.value = contactsSync.discoverGoogleAccounts()
             if (contactsSync.hasContactsPermission() || contactsSync.hasCallLogPermission()) {
                 syncDeviceContactsAndLogs(silent = true)
@@ -222,17 +291,16 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
                 when (session.lifecycle) {
                     CallLifecycleState.INCOMING_RINGING -> {
                         if (session.isSystemTelecomCall && session.phoneNumber.isNotBlank()) {
-                            val normalized = T9Utils.normalizePhone(session.phoneNumber)
-                            val contact = T9Utils.buildNumberLookup(contacts.value)[normalized]
-                                ?: db.contactDao().findByNormalizedNumber(normalized)
+                            val contact = findMatchingContact(session.phoneNumber)
                             val verdict = spamEngine.evaluateNumber(session.phoneNumber, session.displayName)
                             val curSettings = settings.value
+                            val backdrop = CallSessionBridge.resolveBackdropSpec(contact, curSettings)
                             CallSessionBridge.enrichWithContact(
                                 contact = contact,
                                 isSpam = verdict.isSpam,
                                 spamScore = verdict.riskScore,
                                 spamReason = verdict.reason,
-                                defaultVideoUri = curSettings.defaultVideoBackdropUri,
+                                backdrop = backdrop,
                                 defaultVibrationId = curSettings.activeVibrationPatternId
                             )
                             if (!session.isRingMuted) {
@@ -242,20 +310,63 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
                                     repeat = true
                                 )
                             }
+                            scheduleAiAutoAnswerIfNeeded(isUnknownCaller = contact == null)
                         }
-                        if (settings.value.voiceCommandControlEnabled && !voice.state.value.isContinuousCallMode) {
+                        if (settings.value.voiceCommandControlEnabled &&
+                            !settings.value.aiAssistantEnabled &&
+                            !voice.state.value.isContinuousCallMode
+                        ) {
                             voice.startHandsFreeCallLoop { spoken ->
                                 executeAiOrVoiceCommand(spoken)
                             }
                         }
                     }
 
+                    CallLifecycleState.DIALING -> {
+                        // Never cycle mic SpeechRecognizer during outgoing dialing
+                        voice.stopListening()
+                        if (session.phoneNumber.isNotBlank() &&
+                            (session.contactId == null || session.displayName.isBlank() || session.displayName == session.phoneNumber)
+                        ) {
+                            val contact = findMatchingContact(session.phoneNumber)
+                            val verdict = spamEngine.evaluateNumber(session.phoneNumber, contact?.name.orEmpty())
+                            val curSettings = settings.value
+                            val backdrop = CallSessionBridge.resolveBackdropSpec(contact, curSettings)
+                            CallSessionBridge.enrichWithContact(
+                                contact = contact,
+                                isSpam = verdict.isSpam,
+                                spamScore = verdict.riskScore,
+                                spamReason = verdict.reason,
+                                backdrop = backdrop,
+                                defaultVibrationId = curSettings.activeVibrationPatternId
+                            )
+                        }
+                    }
+
                     CallLifecycleState.ACTIVE -> {
+                        // Stop SpeechRecognizer immediately when call is received/connected to prevent mic cycling & call audio issues
+                        voice.stopListening()
                         ringtonePlayer.stop()
                         vibEngine.stop()
                         ringTimeoutJob?.cancel()
                         ringTimeoutJob = null
                         if (callTimerJob == null) startElapsedTimer()
+                        if (session.phoneNumber.isNotBlank() &&
+                            (session.contactId == null || session.displayName.isBlank() || session.displayName == session.phoneNumber)
+                        ) {
+                            val contact = findMatchingContact(session.phoneNumber)
+                            val verdict = spamEngine.evaluateNumber(session.phoneNumber, contact?.name.orEmpty())
+                            val curSettings = settings.value
+                            val backdrop = CallSessionBridge.resolveBackdropSpec(contact, curSettings)
+                            CallSessionBridge.enrichWithContact(
+                                contact = contact,
+                                isSpam = verdict.isSpam,
+                                spamScore = verdict.riskScore,
+                                spamReason = verdict.reason,
+                                backdrop = backdrop,
+                                defaultVibrationId = curSettings.activeVibrationPatternId
+                            )
+                        }
                         CallNotificationManager.showOrUpdateCallNotification(
                             context = getApplication(),
                             callerName = session.displayName,
@@ -264,11 +375,7 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
                             isSpeakerOn = session.isSpeakerOn,
                             callStartMs = session.callStartedAtMs
                         )
-                        if (settings.value.voiceCommandControlEnabled && !voice.state.value.isContinuousCallMode) {
-                            voice.startHandsFreeCallLoop { spoken ->
-                                executeAiOrVoiceCommand(spoken)
-                            }
-                        }
+                        syncActiveVoiceChangerState(session, settings.value)
                     }
 
                     CallLifecycleState.IDLE -> {
@@ -276,12 +383,16 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
                         vibEngine.stop()
                         ringTimeoutJob?.cancel()
                         ringTimeoutJob = null
+                        aiAutoAnswerJob?.cancel()
+                        aiAutoAnswerJob = null
+                        aiConversationJob?.cancel()
+                        aiConversationJob = null
+                        aiAssistantEngine.stopAll()
+                        voiceChangerEngine.stopLiveDsp()
                         stopElapsedTimer()
                         voice.stopListening()
                         CallNotificationManager.cancel(getApplication())
                     }
-
-                    CallLifecycleState.DIALING -> Unit
                 }
             }
         }
@@ -289,6 +400,12 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
 
     fun playUiClick() {
         uiSounds.playUiClick(settings.value.uiSoundsEnabled)
+    }
+
+    fun pulseUiHaptic() {
+        if (settings.value.uiVibrationEnabled) {
+            vibEngine.pulseKeypadTick()
+        }
     }
 
     fun clearStatusMessage() {
@@ -304,13 +421,13 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun appendDialDigit(digit: String) {
-        vibEngine.pulseKeypadTick()
+        pulseUiHaptic()
         uiSounds.playDialTone(digit, settings.value.dialpadSoundStyle)
         _dialerQuery.value += digit
     }
 
     fun backspaceDialDigit() {
-        vibEngine.pulseKeypadTick()
+        pulseUiHaptic()
         playUiClick()
         val current = _dialerQuery.value
         if (current.isNotEmpty()) {
@@ -392,13 +509,107 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    // Multi-user Google Account Sign-In / Switcher (Credential Manager + Firebase Auth)
+    fun signInWithGoogle(activityContext: Context) {
+        if (_googleAuthState.value.isSigningIn) return
+        viewModelScope.launch {
+            prefs.setHasPromptedGoogleSignIn(true)
+            _googleAuthState.value = GoogleAuthUiState(isSigningIn = true, errorMessage = null)
+            when (val outcome = signInManager.signInWithGoogle(activityContext)) {
+                is GoogleSignInOutcome.Success -> {
+                    applySignedInProfile(outcome.profile, silent = false)
+                    _googleAuthState.value = GoogleAuthUiState(isSigningIn = false, errorMessage = null)
+                }
+                is GoogleSignInOutcome.Cancelled -> {
+                    _googleAuthState.value = GoogleAuthUiState(isSigningIn = false, errorMessage = null)
+                }
+                is GoogleSignInOutcome.Failed -> {
+                    _googleAuthState.value = GoogleAuthUiState(
+                        isSigningIn = false,
+                        errorMessage = outcome.message
+                    )
+                    _statusMessage.value = outcome.message
+                }
+            }
+        }
+    }
+
+    private suspend fun applySignedInProfile(
+        profile: GoogleSignedInProfile,
+        silent: Boolean
+    ) {
+        val prev = settings.value
+        val emailChanged = prev.signedInGoogleEmail.isNotBlank() &&
+            !prev.signedInGoogleEmail.equals(profile.email, ignoreCase = true)
+
+        if (emailChanged) {
+            cachedDriveToken = null
+            prefs.setDriveConnectionInfo("")
+            _driveUiState.value = GoogleDriveUiState()
+        }
+
+        prefs.setSignedInGoogleProfile(
+            email = profile.email,
+            displayName = profile.displayName,
+            photoUri = profile.photoUri
+        )
+
+        val ownerShouldAutoUpdate = prev.aiAssistantOwnerName.isBlank() ||
+            prev.aiAssistantOwnerName == prev.signedInGoogleName
+        if (ownerShouldAutoUpdate && profile.displayName.isNotBlank()) {
+            prefs.setAiAssistantOwnerName(profile.displayName)
+        }
+
+        if (profile.email.isNotBlank() && prev.googleSyncEnabled) {
+            prefs.addGoogleSyncAccount(profile.email)
+            syncDeviceContactsAndLogs(silent = true)
+        }
+
+        if (!silent) {
+            val label = profile.displayName.ifBlank { profile.email }
+            _statusMessage.value = "Signed in as $label. Drive backup & AI profile updated."
+        }
+    }
+
+    fun signOutGoogleAccount() {
+        viewModelScope.launch {
+            val prevName = settings.value.signedInGoogleName
+            signInManager.signOut()
+            cachedDriveToken = null
+            prefs.setSignedInGoogleProfile("", "", "")
+            prefs.setDriveConnectionInfo("")
+            if (prevName.isNotBlank() && settings.value.aiAssistantOwnerName == prevName) {
+                prefs.setAiAssistantOwnerName("")
+            }
+            _driveUiState.value = GoogleDriveUiState()
+            _googleAuthState.value = GoogleAuthUiState()
+            _statusMessage.value = "Signed out of Google account."
+        }
+    }
+
+    fun dismissGoogleSignInPrompt() {
+        viewModelScope.launch {
+            prefs.setHasPromptedGoogleSignIn(true)
+        }
+    }
+
     fun exportBackupJson(uri: Uri) {
         viewModelScope.launch {
-            backupManager.exportBackupJson(uri).onSuccess { res ->
+            backupManager.exportBackupJson(uri, includeData = true, includeSettings = true).onSuccess { res ->
                 _statusMessage.value =
-                    "Exported ${res.restoredContacts} contacts & ${res.restoredCallLogs} call history entries."
+                    "Exported ${res.restoredContacts} contacts, ${res.restoredCallLogs} call logs & settings."
             }.onFailure { err ->
                 _statusMessage.value = err.localizedMessage ?: "Backup export failed."
+            }
+        }
+    }
+
+    fun exportSettingsJson(uri: Uri) {
+        viewModelScope.launch {
+            backupManager.exportSettingsJson(uri).onSuccess { count ->
+                _statusMessage.value = "Exported $count app settings preferences (.json)."
+            }.onFailure { err ->
+                _statusMessage.value = err.localizedMessage ?: "Settings export failed."
             }
         }
     }
@@ -415,14 +626,238 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
 
     fun restoreBackupJson(uri: Uri) {
         viewModelScope.launch {
-            backupManager.restoreFromBackupJson(uri).onSuccess { res ->
+            backupManager.restoreFromBackupJson(uri, restoreData = true, restoreSettings = true).onSuccess { res ->
                 DotDialContactWidgetProvider.refreshAll(getApplication())
+                val settingsPart = if (res.restoredSettingsCount > 0) " & ${res.restoredSettingsCount} settings" else ""
                 _statusMessage.value =
-                    "Restored ${res.restoredContacts} contacts & ${res.restoredCallLogs} call history entries."
+                    "Restored ${res.restoredContacts} contacts, ${res.restoredCallLogs} logs$settingsPart."
             }.onFailure { err ->
                 _statusMessage.value = err.localizedMessage ?: "Backup restore failed."
             }
         }
+    }
+
+    fun restoreSettingsJson(uri: Uri) {
+        viewModelScope.launch {
+            backupManager.restoreFromBackupJson(uri, restoreData = false, restoreSettings = true).onSuccess { res ->
+                _statusMessage.value = if (res.restoredSettingsCount > 0) {
+                    "Restored ${res.restoredSettingsCount} app settings preferences."
+                } else {
+                    "No valid app settings found in selected file."
+                }
+            }.onFailure { err ->
+                _statusMessage.value = err.localizedMessage ?: "Settings restore failed."
+            }
+        }
+    }
+
+    // Google Drive Direct Backup & Restore
+    fun consumeDrivePendingConsent() {
+        _driveUiState.value = _driveUiState.value.copy(pendingConsentIntent = null)
+    }
+
+    fun connectGoogleDrive(afterAuth: (() -> Unit)? = null) {
+        pendingDriveAction = afterAuth
+        viewModelScope.launch {
+            _driveUiState.value = _driveUiState.value.copy(
+                isAuthorizing = true,
+                errorMessage = null
+            )
+            when (val outcome = driveBackup.authorizeDriveAccess()) {
+                is DriveAuthorizationOutcome.Authorized -> {
+                    onDriveTokenAcquired(outcome.accessToken)
+                }
+                is DriveAuthorizationOutcome.NeedsConsent -> {
+                    _driveUiState.value = _driveUiState.value.copy(
+                        isAuthorizing = false,
+                        pendingConsentIntent = outcome.pendingIntent
+                    )
+                }
+                is DriveAuthorizationOutcome.Failed -> {
+                    pendingDriveAction = null
+                    _driveUiState.value = _driveUiState.value.copy(
+                        isAuthorizing = false,
+                        errorMessage = outcome.message
+                    )
+                    _statusMessage.value = outcome.message
+                }
+            }
+        }
+    }
+
+    fun onDriveConsentActivityResult(data: Intent?) {
+        driveBackup.extractTokenFromConsentResult(data).onSuccess { token ->
+            viewModelScope.launch {
+                onDriveTokenAcquired(token)
+            }
+        }.onFailure { err ->
+            pendingDriveAction = null
+            val msg = err.localizedMessage ?: "Google Drive consent failed."
+            _driveUiState.value = _driveUiState.value.copy(
+                isAuthorizing = false,
+                errorMessage = msg
+            )
+            _statusMessage.value = msg
+        }
+    }
+
+    private suspend fun onDriveTokenAcquired(token: String) {
+        cachedDriveToken = token
+        val userInfo = driveBackup.fetchUserInfo(token).getOrNull()
+        val email = userInfo?.email?.ifBlank { settings.value.driveConnectedEmail }
+            ?: settings.value.driveConnectedEmail
+        val display = userInfo?.displayName.orEmpty()
+        if (email.isNotBlank()) {
+            prefs.setDriveConnectionInfo(email)
+        }
+        val files = driveBackup.listBackups(token).getOrDefault(emptyList())
+        _driveUiState.value = _driveUiState.value.copy(
+            isAuthorizing = false,
+            connectedEmail = email.ifBlank { "Google Drive Connected" },
+            displayName = display,
+            availableBackups = files,
+            errorMessage = null,
+            statusDetail = "Connected to '${GoogleDriveBackupManager.DRIVE_FOLDER_DISPLAY_NAME}'"
+        )
+        val pending = pendingDriveAction
+        pendingDriveAction = null
+        if (pending != null) {
+            pending.invoke()
+        } else {
+            _statusMessage.value = "Google Drive connected (${email.ifBlank { "Ready" }})."
+        }
+    }
+
+    fun refreshDriveBackups() {
+        val token = cachedDriveToken
+        if (token.isNullOrBlank()) {
+            connectGoogleDrive { refreshDriveBackups() }
+            return
+        }
+        viewModelScope.launch {
+            _driveUiState.value = _driveUiState.value.copy(isBusy = true, errorMessage = null)
+            driveBackup.listBackups(token).onSuccess { list ->
+                _driveUiState.value = _driveUiState.value.copy(
+                    isBusy = false,
+                    availableBackups = list,
+                    statusDetail = "Found ${list.size} backup file(s) in '${GoogleDriveBackupManager.DRIVE_FOLDER_DISPLAY_NAME}'"
+                )
+            }.onFailure { err ->
+                cachedDriveToken = null
+                _driveUiState.value = _driveUiState.value.copy(
+                    isBusy = false,
+                    errorMessage = err.localizedMessage ?: "Unable to refresh Google Drive backups."
+                )
+            }
+        }
+    }
+
+    fun backupToGoogleDrive(includeData: Boolean, includeSettings: Boolean) {
+        val token = cachedDriveToken
+        if (token.isNullOrBlank()) {
+            connectGoogleDrive { backupToGoogleDrive(includeData, includeSettings) }
+            return
+        }
+        viewModelScope.launch {
+            _driveUiState.value = _driveUiState.value.copy(isBusy = true, errorMessage = null)
+            val fileName = when {
+                includeData && includeSettings -> GoogleDriveBackupManager.FILE_FULL_BACKUP
+                includeData -> GoogleDriveBackupManager.FILE_CONTACTS_AND_HISTORY
+                else -> GoogleDriveBackupManager.FILE_SETTINGS_ONLY
+            }
+            val payload = backupManager.buildBackupJsonString(
+                includeData = includeData,
+                includeSettings = includeSettings
+            )
+            driveBackup.uploadJsonBackup(token, fileName, payload).onSuccess { uploaded ->
+                val now = System.currentTimeMillis()
+                prefs.setDriveConnectionInfo(_driveUiState.value.connectedEmail, lastBackupAtMs = now)
+                val updatedFiles = driveBackup.listBackups(token).getOrDefault(_driveUiState.value.availableBackups)
+                val label = when {
+                    includeData && includeSettings -> "Contacts, Call History & All Settings"
+                    includeData -> "Contacts & Call History"
+                    else -> "All App Settings"
+                }
+                _driveUiState.value = _driveUiState.value.copy(
+                    isBusy = false,
+                    availableBackups = updatedFiles,
+                    statusDetail = "Backed up $label to '${GoogleDriveBackupManager.DRIVE_FOLDER_DISPLAY_NAME}/${uploaded.name}'"
+                )
+                _statusMessage.value = "Saved $label to Google Drive."
+            }.onFailure { err ->
+                val msg = err.localizedMessage ?: "Google Drive backup failed."
+                if (msg.contains("401")) cachedDriveToken = null
+                _driveUiState.value = _driveUiState.value.copy(isBusy = false, errorMessage = msg)
+                _statusMessage.value = msg
+            }
+        }
+    }
+
+    fun restoreFromGoogleDrive(
+        fileId: String,
+        restoreData: Boolean = true,
+        restoreSettings: Boolean = true
+    ) {
+        val token = cachedDriveToken
+        if (token.isNullOrBlank()) {
+            connectGoogleDrive { restoreFromGoogleDrive(fileId, restoreData, restoreSettings) }
+            return
+        }
+        viewModelScope.launch {
+            _driveUiState.value = _driveUiState.value.copy(isBusy = true, errorMessage = null)
+            driveBackup.downloadBackupContent(token, fileId).onSuccess { rawJson ->
+                val summary = backupManager.restoreFromJsonString(
+                    raw = rawJson,
+                    restoreData = restoreData,
+                    restoreSettings = restoreSettings
+                )
+                DotDialContactWidgetProvider.refreshAll(getApplication())
+                val msg = buildString {
+                    append("Restored from Drive: ")
+                    val parts = mutableListOf<String>()
+                    if (restoreData) {
+                        parts.add("${summary.restoredContacts} contacts")
+                        parts.add("${summary.restoredCallLogs} calls")
+                    }
+                    if (restoreSettings && summary.restoredSettingsCount > 0) {
+                        parts.add("${summary.restoredSettingsCount} settings")
+                    }
+                    append(parts.joinToString(", ").ifBlank { "complete" })
+                }
+                _driveUiState.value = _driveUiState.value.copy(isBusy = false, statusDetail = msg)
+                _statusMessage.value = msg
+            }.onFailure { err ->
+                val msg = err.localizedMessage ?: "Google Drive restore failed."
+                _driveUiState.value = _driveUiState.value.copy(isBusy = false, errorMessage = msg)
+                _statusMessage.value = msg
+            }
+        }
+    }
+
+    fun disconnectGoogleDrive() {
+        cachedDriveToken = null
+        viewModelScope.launch {
+            prefs.setDriveConnectionInfo("")
+            _driveUiState.value = GoogleDriveUiState()
+            _statusMessage.value = "Disconnected Google Drive session."
+        }
+    }
+
+    private suspend fun findMatchingContact(phoneNumber: String): ContactEntity? {
+        val normalized = T9Utils.normalizePhone(phoneNumber)
+        if (normalized.isBlank()) return null
+        val lookup = T9Utils.buildNumberLookup(contacts.value)
+        lookup[normalized]?.let { return it }
+        db.contactDao().findByNormalizedNumber(normalized)?.let { return it }
+        val tail = if (normalized.length > 10) normalized.takeLast(10) else normalized
+        if (tail.length >= 7) {
+            contacts.value.firstOrNull { c ->
+                c.allNormalizedNumbers().any { n ->
+                    n == normalized || (n.length >= 7 && n.takeLast(10) == tail)
+                }
+            }?.let { return it }
+        }
+        return null
     }
 
     fun placeCall(rawNumber: String, explicitContact: ContactEntity? = null) {
@@ -435,11 +870,10 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             playUiClick()
             val normalized = T9Utils.normalizePhone(cleaned)
-            val contact = explicitContact
-                ?: T9Utils.buildNumberLookup(contacts.value)[normalized]
-                ?: db.contactDao().findByNormalizedNumber(normalized)
+            val contact = explicitContact ?: findMatchingContact(cleaned)
             val verdict = spamEngine.evaluateNumber(cleaned, contact?.name.orEmpty())
             val curSettings = settings.value
+            val backdrop = CallSessionBridge.resolveBackdropSpec(contact, curSettings)
             val initialRoute = audioRoutes.resolvePreferredRoute(curSettings.audioOutputMode)
             audioRoutes.applyRoute(initialRoute)
 
@@ -458,7 +892,16 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
             currentCallLogId = logId
 
             val placedOnSystem = CallSessionBridge.placeSystemCallIfSupported(getApplication(), cleaned)
-            if (!placedOnSystem || !CallSessionBridge.isDefaultDialer(getApplication())) {
+            if (placedOnSystem && CallSessionBridge.isDefaultDialer(getApplication())) {
+                CallSessionBridge.enrichWithContact(
+                    contact = contact,
+                    isSpam = verdict.isSpam,
+                    spamScore = verdict.riskScore,
+                    spamReason = verdict.reason,
+                    backdrop = backdrop,
+                    defaultVibrationId = curSettings.activeVibrationPatternId
+                )
+            } else {
                 CallSessionBridge.startInAppCallSession(
                     displayName = contact?.name ?: cleaned,
                     phoneNumber = cleaned,
@@ -468,7 +911,7 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
                     isSpam = verdict.isSpam,
                     spamScore = verdict.riskScore,
                     spamReason = verdict.reason,
-                    defaultVideoUri = curSettings.defaultVideoBackdropUri,
+                    backdrop = backdrop,
                     defaultVibrationId = curSettings.activeVibrationPatternId,
                     initialAudioRoute = initialRoute,
                     bluetoothConnected = audioRoutes.bluetoothConnected.value
@@ -477,6 +920,50 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
                 maybeTriggerAutoRecord(contact == null)
             }
             _dialerQuery.value = ""
+        }
+    }
+
+    fun placeVideoCall(rawNumber: String, explicitContact: ContactEntity? = null) {
+        val cleaned = rawNumber.trim()
+        if (cleaned.isEmpty()) {
+            _statusMessage.value = "Phone number unavailable for video call."
+            return
+        }
+        viewModelScope.launch {
+            playUiClick()
+            val normalized = T9Utils.normalizePhone(cleaned)
+            val contact = explicitContact ?: findMatchingContact(cleaned)
+            val verdict = spamEngine.evaluateNumber(cleaned, contact?.name.orEmpty())
+            val curSettings = settings.value
+            val backdrop = CallSessionBridge.resolveBackdropSpec(contact, curSettings)
+
+            val logId = db.callLogDao().insert(
+                CallLogEntity(
+                    contactId = contact?.id,
+                    displayName = contact?.name ?: cleaned,
+                    phoneNumber = cleaned,
+                    normalizedNumber = normalized,
+                    direction = CallDirection.OUTGOING,
+                    durationSeconds = 0,
+                    isSpam = verdict.isSpam,
+                    spamReason = if (verdict.isSpam) verdict.reason else ""
+                )
+            )
+            currentCallLogId = logId
+
+            val placedVideo = CallSessionBridge.placeVideoCallIfSupported(getApplication(), cleaned)
+            if (placedVideo) {
+                CallSessionBridge.enrichWithContact(
+                    contact = contact,
+                    isSpam = verdict.isSpam,
+                    spamScore = verdict.riskScore,
+                    spamReason = verdict.reason,
+                    backdrop = backdrop,
+                    defaultVibrationId = curSettings.activeVibrationPatternId
+                )
+            } else {
+                _statusMessage.value = "Carrier video calling unavailable or CALL_PHONE permission missing."
+            }
         }
     }
 
@@ -499,6 +986,7 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
             val verdict = spamEngine.evaluateNumber(number, displayName)
             val vibId = chosenContact?.vibrationPatternId ?: curSettings.activeVibrationPatternId
             val preferredRoute = audioRoutes.resolvePreferredRoute(curSettings.audioOutputMode)
+            val backdrop = CallSessionBridge.resolveBackdropSpec(chosenContact, curSettings)
 
             CallSessionBridge.startInAppCallSession(
                 displayName = displayName,
@@ -509,7 +997,7 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
                 isSpam = verdict.isSpam || spamTest,
                 spamScore = if (spamTest) maxOf(verdict.riskScore, 91) else verdict.riskScore,
                 spamReason = if (spamTest && verdict.reason.isBlank()) "Automated Robocall Signature" else verdict.reason,
-                defaultVideoUri = curSettings.defaultVideoBackdropUri,
+                backdrop = backdrop,
                 defaultVibrationId = vibId,
                 initialAudioRoute = preferredRoute,
                 bluetoothConnected = audioRoutes.bluetoothConnected.value
@@ -525,14 +1013,20 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
                     endActiveCall()
                 }
             }
+
+            scheduleAiAutoAnswerIfNeeded(isUnknownCaller = chosenContact == null)
         }
     }
 
     fun answerActiveCall(toStatusBar: Boolean = false) {
+        voice.stopListening()
         ringtonePlayer.stop()
         vibEngine.stop()
         ringTimeoutJob?.cancel()
         ringTimeoutJob = null
+        aiAutoAnswerJob?.cancel()
+        aiAutoAnswerJob = null
+        CallSessionBridge.updateAiCountdown(0)
 
         val curSettings = settings.value
         val route = audioRoutes.resolvePreferredRoute(curSettings.audioOutputMode)
@@ -570,6 +1064,21 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun toggleIncomingRingMuteInPlace() {
+        val s = callSession.value
+        if (s.lifecycle != CallLifecycleState.INCOMING_RINGING) return
+        val nextMuted = !s.isRingMuted
+        CallSessionBridge.setRingMutedInPlace(nextMuted)
+        if (nextMuted) {
+            ringtonePlayer.stop()
+            vibEngine.stop()
+        } else {
+            val cur = settings.value
+            ringtonePlayer.startRinging(cur.customRingtoneUri)
+            playVibrationById(s.vibrationPatternId, repeat = true)
+        }
+    }
+
     fun openFullCallScreen() {
         CallSessionBridge.setDisplayMode(CallDisplayMode.FULL_SCREEN)
     }
@@ -583,6 +1092,12 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
         vibEngine.stop()
         ringTimeoutJob?.cancel()
         ringTimeoutJob = null
+        aiAutoAnswerJob?.cancel()
+        aiAutoAnswerJob = null
+        aiConversationJob?.cancel()
+        aiConversationJob = null
+        aiAssistantEngine.stopAll()
+        voiceChangerEngine.stopLiveDsp()
         stopElapsedTimer()
         voice.stopListening()
         CallNotificationManager.cancel(getApplication())
@@ -631,8 +1146,28 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
             }
             currentCallLogId = null
 
+            val aiTranscriptBlock = if (endedSnapshot.aiTranscript.isNotEmpty()) {
+                buildString {
+                    if (endedSnapshot.aiCallerPurposeTag.isNotBlank()) {
+                        appendLine("AI Call Screening Purpose: ${endedSnapshot.aiCallerPurposeTag}")
+                    }
+                    endedSnapshot.aiTranscript.forEach { turn ->
+                        appendLine("${turn.speaker} (${turn.languageCode}): ${turn.text}")
+                    }
+                }.trim()
+            } else {
+                ""
+            }
             val notes = endedSnapshot.miniNotepadText.trim()
-            if (!savedFile.isNullOrBlank() || notes.isNotEmpty() || settings.value.autoSummarizeEnabled) {
+            val combinedNotes = listOf(aiTranscriptBlock, notes)
+                .filter { it.isNotBlank() }
+                .joinToString("\n\n")
+
+            if (!savedFile.isNullOrBlank() ||
+                combinedNotes.isNotEmpty() ||
+                endedSnapshot.isAiAssistantActive ||
+                settings.value.autoSummarizeEnabled
+            ) {
                 val recId = db.recordingDao().insert(
                     CallRecordingEntity(
                         callLogId = logId,
@@ -640,16 +1175,367 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
                         phoneNumber = endedSnapshot.phoneNumber,
                         filePath = savedFile.orEmpty(),
                         durationSeconds = recordedDuration,
-                        transcriptText = notes,
+                        transcriptText = combinedNotes,
                         isLocked = settings.value.vaultPin.isNotBlank()
                     )
                 )
                 db.callLogDao().attachRecording(logId, recId)
-                if (settings.value.autoSummarizeEnabled && endedSnapshot.elapsedSeconds > 0) {
-                    summarizeRecording(recId, notes.ifBlank { null })
+                if ((endedSnapshot.isAiAssistantActive && combinedNotes.isNotBlank()) ||
+                    (settings.value.autoSummarizeEnabled && endedSnapshot.elapsedSeconds > 0)
+                ) {
+                    summarizeRecording(recId, combinedNotes.ifBlank { null })
                 }
             }
         }
+    }
+
+    // Gemini AI Call Assistant Pipeline
+    private fun resolveOwnerDisplayName(curSettings: DialerSettings): String {
+        val explicit = curSettings.aiAssistantOwnerName.trim()
+        if (explicit.isNotEmpty()) return explicit
+        val signedInName = curSettings.signedInGoogleName.trim()
+        if (signedInName.isNotEmpty()) return signedInName
+        val driveName = _driveUiState.value.displayName.trim()
+        if (driveName.isNotEmpty()) return driveName
+        val accountEmail = curSettings.signedInGoogleEmail
+            .ifBlank { curSettings.driveConnectedEmail }
+            .ifBlank { curSettings.syncedGoogleAccounts.firstOrNull().orEmpty() }
+            .ifBlank { _discoveredGoogleAccounts.value.firstOrNull().orEmpty() }
+        if (accountEmail.contains("@")) {
+            val local = accountEmail.substringBefore("@").replace('.', ' ').replace('_', ' ').trim()
+            if (local.isNotEmpty()) {
+                return local.split(" ").filter { it.isNotBlank() }
+                    .joinToString(" ") { part -> part.replaceFirstChar { it.uppercase() } }
+            }
+        }
+        return DeviceNameHelper.resolveDeviceShortName(getApplication()) + " Owner"
+    }
+
+    private fun scheduleAiAutoAnswerIfNeeded(isUnknownCaller: Boolean) {
+        val cur = settings.value
+        if (!cur.aiAssistantEnabled) return
+        val delaySec = when (cur.aiAssistantTriggerMode) {
+            AiAssistantTriggerMode.ALL_INCOMING -> 2
+            AiAssistantTriggerMode.AFTER_DELAY -> cur.aiAssistantDelaySeconds
+            AiAssistantTriggerMode.UNKNOWN_ONLY -> if (isUnknownCaller) cur.aiAssistantDelaySeconds else return
+            AiAssistantTriggerMode.BUSY_MODE_ONLY -> if (cur.aiBusyModeEnabled) 2 else return
+        }
+
+        aiAutoAnswerJob?.cancel()
+        aiAutoAnswerJob = viewModelScope.launch {
+            for (sec in delaySec downTo 1) {
+                if (callSession.value.lifecycle != CallLifecycleState.INCOMING_RINGING) {
+                    CallSessionBridge.updateAiCountdown(0)
+                    return@launch
+                }
+                CallSessionBridge.updateAiCountdown(sec)
+                delay(1000L)
+            }
+            CallSessionBridge.updateAiCountdown(0)
+            if (callSession.value.lifecycle == CallLifecycleState.INCOMING_RINGING) {
+                startAiAssistantForCall()
+            }
+        }
+    }
+
+    fun cancelAiAutoAnswerCountdown() {
+        aiAutoAnswerJob?.cancel()
+        aiAutoAnswerJob = null
+        CallSessionBridge.clearAiAssistantState()
+    }
+
+    fun startAiAssistantForCall() {
+        val session = callSession.value
+        if (session.lifecycle == CallLifecycleState.IDLE) return
+
+        ringtonePlayer.stop()
+        vibEngine.stop()
+        ringTimeoutJob?.cancel()
+        ringTimeoutJob = null
+        aiAutoAnswerJob?.cancel()
+        aiAutoAnswerJob = null
+        voice.stopListening()
+
+        val curSettings = settings.value
+        val ownerName = resolveOwnerDisplayName(curSettings)
+
+        if (session.lifecycle == CallLifecycleState.INCOMING_RINGING) {
+            CallSessionBridge.answerCall(acceptToStatusBar = false)
+            startElapsedTimer()
+        } else {
+            CallSessionBridge.setDisplayMode(CallDisplayMode.FULL_SCREEN)
+        }
+
+        // Route over Speakerphone so caller hears TTS audio over acoustic coupling
+        applyCallAudioRoute(ActiveAudioRoute.SPEAKER)
+
+        if (curSettings.aiAssistantAutoRecord &&
+            recorder.hasRecordPermission() &&
+            !recorder.isRecording.value
+        ) {
+            recorder.startRecording(playConsentBeep = !curSettings.silentCallRecording)
+                .onSuccess { file -> CallSessionBridge.updateRecordingState(true, file.absolutePath) }
+        }
+
+        val (greeting, initialLang) = aiAssistantEngine.buildInitialGreeting(
+            ownerName = ownerName,
+            languageMode = curSettings.aiAssistantLanguageMode
+        )
+
+        CallSessionBridge.updateAiAssistantState(
+            active = true,
+            phase = AiCallPhase.GREETING,
+            languageCode = initialLang.code,
+            ownerName = ownerName
+        )
+        CallSessionBridge.appendAiTranscriptTurn("AI", greeting, initialLang.code)
+
+        val (aiPitch, aiRate) = resolveAiVoicePitchAndRate(curSettings)
+        aiAssistantEngine.speak(
+            text = greeting,
+            language = initialLang,
+            isPreview = false,
+            pitch = aiPitch,
+            speechRate = aiRate
+        ) {
+            val latest = callSession.value
+            if (latest.lifecycle == CallLifecycleState.ACTIVE &&
+                latest.isAiAssistantActive &&
+                latest.aiPhase != AiCallPhase.HANDED_OVER
+            ) {
+                listenNextAiAssistantTurn(initialLang)
+            }
+        }
+    }
+
+    private fun listenNextAiAssistantTurn(languageHint: AssistantReplyLanguage) {
+        val latest = callSession.value
+        if (latest.lifecycle != CallLifecycleState.ACTIVE ||
+            !latest.isAiAssistantActive ||
+            latest.aiPhase == AiCallPhase.HANDED_OVER
+        ) {
+            return
+        }
+
+        val curSettings = settings.value
+        CallSessionBridge.updateAiAssistantState(
+            active = true,
+            phase = AiCallPhase.LISTENING,
+            languageCode = languageHint.code
+        )
+        aiAssistantEngine.listenForCallerTurn(
+            languageHint = languageHint,
+            languageMode = curSettings.aiAssistantLanguageMode,
+            onSpoken = { callerText ->
+                processAiCallerUtterance(callerText)
+            },
+            onSilenceOrError = {
+                // Keep listening cleanly if call stays active without spamming
+                aiConversationJob?.cancel()
+                aiConversationJob = viewModelScope.launch {
+                    delay(1200L)
+                    val s = callSession.value
+                    if (s.lifecycle == CallLifecycleState.ACTIVE &&
+                        s.isAiAssistantActive &&
+                        s.aiPhase == AiCallPhase.LISTENING &&
+                        s.aiTranscript.size < 14
+                    ) {
+                        listenNextAiAssistantTurn(languageHint)
+                    }
+                }
+            }
+        )
+    }
+
+    fun sendSimulatedCallerReplyToAi(callerUtterance: String) {
+        val clean = callerUtterance.trim()
+        if (clean.isEmpty()) return
+        aiAssistantEngine.stopAll()
+        processAiCallerUtterance(clean)
+    }
+
+    private fun processAiCallerUtterance(callerSpeech: String) {
+        val session = callSession.value
+        if (session.lifecycle != CallLifecycleState.ACTIVE ||
+            !session.isAiAssistantActive ||
+            session.aiPhase == AiCallPhase.HANDED_OVER
+        ) {
+            return
+        }
+
+        val curLang = AssistantReplyLanguage.fromCode(session.aiActiveLanguageCode)
+        CallSessionBridge.appendAiTranscriptTurn("Caller", callerSpeech, curLang.code)
+        CallSessionBridge.updateAiAssistantState(
+            active = true,
+            phase = AiCallPhase.THINKING,
+            languageCode = curLang.code
+        )
+
+        val curSettings = settings.value
+        val ownerName = session.aiOwnerName.ifBlank { resolveOwnerDisplayName(curSettings) }
+        val historyLines = callSession.value.aiTranscript.map { "${it.speaker}: ${it.text}" }
+
+        aiConversationJob?.cancel()
+        aiConversationJob = viewModelScope.launch {
+            val result = gemini.generateCallAssistantReply(
+                ownerName = ownerName,
+                callerName = session.displayName,
+                phoneNumber = session.phoneNumber,
+                languageMode = curSettings.aiAssistantLanguageMode,
+                historyLines = historyLines,
+                latestCallerSpeech = callerSpeech
+            )
+
+            result.onSuccess { turn ->
+                val cur = callSession.value
+                if (cur.lifecycle != CallLifecycleState.ACTIVE ||
+                    !cur.isAiAssistantActive ||
+                    cur.aiPhase == AiCallPhase.HANDED_OVER
+                ) {
+                    return@onSuccess
+                }
+                CallSessionBridge.updateAiAssistantState(
+                    active = true,
+                    phase = AiCallPhase.SPEAKING,
+                    languageCode = turn.language.code,
+                    ownerName = ownerName,
+                    purposeTag = turn.callerPurposeTag
+                )
+                CallSessionBridge.appendAiTranscriptTurn("AI", turn.replyText, turn.language.code)
+                val (aiPitch, aiRate) = resolveAiVoicePitchAndRate(curSettings)
+                aiAssistantEngine.speak(
+                    text = turn.replyText,
+                    language = turn.language,
+                    isPreview = false,
+                    pitch = aiPitch,
+                    speechRate = aiRate
+                ) {
+                    val afterSpeak = callSession.value
+                    if (afterSpeak.lifecycle == CallLifecycleState.ACTIVE &&
+                        afterSpeak.isAiAssistantActive &&
+                        afterSpeak.aiPhase != AiCallPhase.HANDED_OVER
+                    ) {
+                        if (turn.shouldEndCall) {
+                            viewModelScope.launch {
+                                delay(900L)
+                                endActiveCall()
+                            }
+                        } else {
+                            listenNextAiAssistantTurn(turn.language)
+                        }
+                    }
+                }
+            }.onFailure { err ->
+                _statusMessage.value = err.localizedMessage ?: "Gemini AI Assistant reply failed."
+                val cur = callSession.value
+                if (cur.lifecycle == CallLifecycleState.ACTIVE &&
+                    cur.isAiAssistantActive &&
+                    cur.aiPhase != AiCallPhase.HANDED_OVER
+                ) {
+                    listenNextAiAssistantTurn(curLang)
+                }
+            }
+        }
+    }
+
+    fun takeOverFromAiAssistant() {
+        aiAutoAnswerJob?.cancel()
+        aiAutoAnswerJob = null
+        aiConversationJob?.cancel()
+        aiConversationJob = null
+        aiAssistantEngine.stopAll()
+        CallSessionBridge.updateAiAssistantState(
+            active = true,
+            phase = AiCallPhase.HANDED_OVER
+        )
+        val preferred = audioRoutes.resolvePreferredRoute(settings.value.audioOutputMode)
+        applyCallAudioRoute(preferred)
+        syncActiveVoiceChangerState(callSession.value, settings.value)
+        _statusMessage.value = "You took over the call from AI Assistant."
+    }
+
+    fun previewAiAssistantVoice(language: AssistantReplyLanguage) {
+        val cur = settings.value
+        val owner = resolveOwnerDisplayName(cur)
+        val (pitch, rate) = resolveAiVoicePitchAndRate(cur)
+        aiAssistantEngine.previewSampleVoice(
+            ownerName = owner,
+            language = language,
+            pitch = pitch,
+            speechRate = rate
+        ) { msg ->
+            _statusMessage.value = msg
+        }
+    }
+
+    private fun resolveAiVoicePitchAndRate(curSettings: DialerSettings): Pair<Float, Float> {
+        val mode = curSettings.voiceChangerMode
+        val preset = curSettings.voiceChangerPreset
+        return if ((mode == VoiceChangerSettingsMode.LIVE_DSP_AND_AI_SYNC ||
+                mode == VoiceChangerSettingsMode.AI_PERSONA_ONLY) &&
+            preset != VoiceChangerPreset.NORMAL
+        ) {
+            preset.ttsPitch to preset.ttsRate
+        } else {
+            1.0f to 0.96f
+        }
+    }
+
+    private fun syncActiveVoiceChangerState(
+        session: CallSessionState,
+        curSettings: DialerSettings,
+        overridePreset: VoiceChangerPreset? = null
+    ) {
+        val activePreset = overridePreset ?: curSettings.voiceChangerPreset
+        val mode = curSettings.voiceChangerMode
+        val modeAllowsDsp = mode == VoiceChangerSettingsMode.LIVE_DSP_AND_AI_SYNC ||
+            mode == VoiceChangerSettingsMode.LIVE_DSP_ONLY
+        val shouldRunDsp = session.lifecycle == CallLifecycleState.ACTIVE &&
+            !session.isMuted &&
+            (!session.isAiAssistantActive || session.aiPhase == AiCallPhase.HANDED_OVER) &&
+            modeAllowsDsp &&
+            activePreset != VoiceChangerPreset.NORMAL
+
+        val running = if (shouldRunDsp) {
+            voiceChangerEngine.updatePreset(activePreset)
+            voiceChangerEngine.startLiveDsp(activePreset)
+        } else {
+            voiceChangerEngine.updatePreset(activePreset)
+            voiceChangerEngine.stopLiveDsp()
+            false
+        }
+        CallSessionBridge.updateVoiceChangerState(activePreset, running)
+    }
+
+    fun setVoiceChangerMode(mode: VoiceChangerSettingsMode) {
+        playUiClick()
+        viewModelScope.launch {
+            prefs.setVoiceChangerMode(mode)
+            val updated = settings.value.copy(voiceChangerMode = mode)
+            syncActiveVoiceChangerState(callSession.value, updated)
+        }
+    }
+
+    fun setVoiceChangerPreset(preset: VoiceChangerPreset) {
+        playUiClick()
+        viewModelScope.launch {
+            prefs.setVoiceChangerPreset(preset)
+            val updated = settings.value.copy(voiceChangerPreset = preset)
+            syncActiveVoiceChangerState(callSession.value, updated, overridePreset = preset)
+            if (callSession.value.lifecycle == CallLifecycleState.ACTIVE) {
+                _statusMessage.value = if (preset == VoiceChangerPreset.NORMAL) {
+                    "Voice FX reset to Natural."
+                } else {
+                    "Voice FX active: ${preset.label}"
+                }
+            }
+        }
+    }
+
+    fun previewVoiceChangerPreset(preset: VoiceChangerPreset) {
+        playUiClick()
+        voiceChangerEngine.previewPreset(preset)
+        _statusMessage.value = "Previewing Voice FX: ${preset.label}"
     }
 
     private fun maybeTriggerAutoRecord(isUnknownCaller: Boolean) {
@@ -686,6 +1572,7 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
     fun toggleMute() {
         val next = !callSession.value.isMuted
         CallSessionBridge.setMuted(getApplication(), next)
+        syncActiveVoiceChangerState(callSession.value.copy(isMuted = next), settings.value)
     }
 
     fun toggleSpeaker() {
@@ -982,7 +1869,24 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
         _aiCommandState.value = AiControlUiState.Idle
     }
 
-    // Contact Management
+    // Contact Management & New Contact Storage Preferences
+    fun setNewContactStorageMode(mode: NewContactStorageMode) {
+        playUiClick()
+        viewModelScope.launch { prefs.setNewContactStorageMode(mode) }
+    }
+
+    fun setPreferredGoogleContactAccount(email: String) {
+        playUiClick()
+        viewModelScope.launch { prefs.setPreferredGoogleContactAccount(email) }
+    }
+
+    fun resolveTargetGoogleContactAccount(cur: DialerSettings): String =
+        cur.preferredGoogleContactAccount
+            .ifBlank { cur.signedInGoogleEmail }
+            .ifBlank { cur.syncedGoogleAccounts.firstOrNull().orEmpty() }
+            .ifBlank { _discoveredGoogleAccounts.value.firstOrNull().orEmpty() }
+            .trim()
+
     fun saveContact(
         existingId: Long? = null,
         name: String,
@@ -1003,9 +1907,20 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
             return
         }
         viewModelScope.launch {
+            val cur = settings.value
             val normalized = T9Utils.normalizePhone(phoneNumber)
             val existing = existingId?.let { db.contactDao().findById(it) }
             val resolvedExtras = additionalNumbersJson ?: existing?.additionalNumbersJson ?: "[]"
+
+            val targetGoogleAccount = if (existing == null && cur.newContactStorageMode == NewContactStorageMode.GOOGLE_ACCOUNT) {
+                resolveTargetGoogleContactAccount(cur).takeIf { it.isNotBlank() }
+            } else null
+
+            val resolvedAccountName = existing?.accountName
+                ?: (targetGoogleAccount ?: "Device")
+            val resolvedAccountType = existing?.accountType
+                ?: if (targetGoogleAccount != null) "com.google" else "local"
+
             db.contactDao().upsert(
                 ContactEntity(
                     id = existing?.id ?: 0L,
@@ -1017,12 +1932,14 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
                     email = email.trim(),
                     photoUri = photoUri ?: existing?.photoUri,
                     callingCardUri = callingCardUri ?: existing?.callingCardUri,
-                    accountName = existing?.accountName.orEmpty(),
-                    accountType = existing?.accountType.orEmpty(),
+                    accountName = resolvedAccountName,
+                    accountType = resolvedAccountType,
                     isFavorite = isFavorite,
                     isBlocked = existing?.isBlocked ?: false,
                     spamScore = existing?.spamScore ?: 0,
                     videoBackdropUri = videoBackdropUri ?: existing?.videoBackdropUri,
+                    backdropPhotoUri = existing?.backdropPhotoUri,
+                    callerBackdropMode = existing?.callerBackdropMode ?: "",
                     vibrationPatternId = vibrationPatternId,
                     notes = notes.trim(),
                     additionalNumbersJson = resolvedExtras,
@@ -1034,11 +1951,15 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
                     name = name.trim(),
                     phoneNumber = phoneNumber.trim(),
                     email = email.trim(),
-                    googleAccount = settings.value.syncedGoogleAccounts.firstOrNull()
+                    googleAccount = targetGoogleAccount
                 )
             }
             DotDialContactWidgetProvider.refreshAll(getApplication())
-            _statusMessage.value = "Contact saved."
+            _statusMessage.value = when {
+                existing != null -> "Contact updated."
+                targetGoogleAccount != null -> "Contact saved to Google ($targetGoogleAccount)."
+                else -> "Contact saved to Device Storage."
+            }
         }
     }
 
@@ -1099,19 +2020,82 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
     fun assignContactCallingCard(contact: ContactEntity, uri: Uri?) {
         viewModelScope.launch {
             if (uri != null) persistUriPermission(uri)
-            db.contactDao().update(contact.copy(callingCardUri = uri?.toString()))
-            _statusMessage.value = if (uri != null) "Calling card updated for ${contact.name}." else "Calling card cleared."
+            val nextMode = if (uri != null) {
+                CallerBackdropMode.CALLING_CARD.name
+            } else if (contact.callerBackdropMode == CallerBackdropMode.CALLING_CARD.name) {
+                CallerBackdropMode.NONE.name
+            } else {
+                contact.callerBackdropMode
+            }
+            db.contactDao().update(
+                contact.copy(
+                    callingCardUri = uri?.toString(),
+                    callerBackdropMode = nextMode
+                )
+            )
+            _statusMessage.value = if (uri != null) {
+                "Calling card enabled exclusively for ${contact.name}."
+            } else {
+                "Calling card cleared."
+            }
         }
     }
 
     fun assignContactVideoBackdrop(contact: ContactEntity, uri: Uri?) {
         viewModelScope.launch {
             if (uri != null) persistUriPermission(uri)
-            db.contactDao().update(contact.copy(videoBackdropUri = uri?.toString()))
+            val nextMode = if (uri != null) {
+                CallerBackdropMode.VIDEO.name
+            } else if (contact.callerBackdropMode == CallerBackdropMode.VIDEO.name) {
+                CallerBackdropMode.NONE.name
+            } else {
+                contact.callerBackdropMode
+            }
+            db.contactDao().update(
+                contact.copy(
+                    videoBackdropUri = uri?.toString(),
+                    callerBackdropMode = nextMode
+                )
+            )
             _statusMessage.value = if (uri != null) {
-                "Video backdrop assigned to ${contact.name}."
+                "Video backdrop enabled exclusively for ${contact.name}."
             } else {
                 "Video backdrop cleared."
+            }
+        }
+    }
+
+    fun assignContactBackdropPhoto(contact: ContactEntity, uri: Uri?) {
+        viewModelScope.launch {
+            if (uri != null) persistUriPermission(uri)
+            val nextMode = if (uri != null) {
+                CallerBackdropMode.PHOTO.name
+            } else if (contact.callerBackdropMode == CallerBackdropMode.PHOTO.name) {
+                CallerBackdropMode.NONE.name
+            } else {
+                contact.callerBackdropMode
+            }
+            db.contactDao().update(
+                contact.copy(
+                    backdropPhotoUri = uri?.toString(),
+                    callerBackdropMode = nextMode
+                )
+            )
+            _statusMessage.value = if (uri != null) {
+                "In-call gallery photo enabled exclusively for ${contact.name}."
+            } else {
+                "In-call gallery photo cleared."
+            }
+        }
+    }
+
+    fun assignContactBackdropMode(contact: ContactEntity, mode: CallerBackdropMode) {
+        viewModelScope.launch {
+            db.contactDao().update(contact.copy(callerBackdropMode = mode.name))
+            _statusMessage.value = if (mode == CallerBackdropMode.NONE) {
+                "Custom caller backdrop turned OFF for ${contact.name}."
+            } else {
+                "${mode.label} enabled for ${contact.name}."
             }
         }
     }
@@ -1181,6 +2165,11 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch { prefs.setThemePreset(preset) }
     }
 
+    fun setAutoDayNightThemeEnabled(enabled: Boolean) {
+        playUiClick()
+        viewModelScope.launch { prefs.setAutoDayNightThemeEnabled(enabled) }
+    }
+
     fun setAmoledBlack(enabled: Boolean) {
         playUiClick()
         viewModelScope.launch { prefs.setAmoledBlack(enabled) }
@@ -1234,6 +2223,13 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
 
     fun setUiSoundsEnabled(enabled: Boolean) {
         viewModelScope.launch { prefs.setUiSoundsEnabled(enabled) }
+    }
+
+    fun setUiVibrationEnabled(enabled: Boolean) {
+        if (enabled) {
+            vibEngine.pulseKeypadTick()
+        }
+        viewModelScope.launch { prefs.setUiVibrationEnabled(enabled) }
     }
 
     fun setDialpadSoundStyle(style: DialpadSoundStyle) {
@@ -1362,11 +2358,44 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch { prefs.setAutoSummarizeEnabled(enabled) }
     }
 
+    fun setDefaultBackdropMode(mode: CallerBackdropMode) {
+        playUiClick()
+        viewModelScope.launch { prefs.setDefaultBackdropMode(mode) }
+    }
+
     fun setDefaultVideoBackdrop(uri: Uri?) {
         viewModelScope.launch {
             if (uri != null) persistUriPermission(uri)
             prefs.setDefaultVideoBackdropUri(uri?.toString())
-            _statusMessage.value = if (uri != null) "Default video backdrop updated." else "Reset to Nothing Glyph."
+            _statusMessage.value = if (uri != null) {
+                "Video backdrop enabled as active caller mode."
+            } else {
+                "Video backdrop cleared."
+            }
+        }
+    }
+
+    fun setDefaultPhotoBackdrop(uri: Uri?) {
+        viewModelScope.launch {
+            if (uri != null) persistUriPermission(uri)
+            prefs.setDefaultPhotoBackdropUri(uri?.toString())
+            _statusMessage.value = if (uri != null) {
+                "Gallery photo enabled as active caller mode."
+            } else {
+                "Gallery photo backdrop cleared."
+            }
+        }
+    }
+
+    fun setDefaultCallingCardBackdrop(uri: Uri?) {
+        viewModelScope.launch {
+            if (uri != null) persistUriPermission(uri)
+            prefs.setDefaultCallingCardUri(uri?.toString())
+            _statusMessage.value = if (uri != null) {
+                "Calling Card enabled as active caller mode."
+            } else {
+                "Calling Card cleared."
+            }
         }
     }
 
@@ -1384,6 +2413,40 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
 
     fun setVoiceCommandControl(enabled: Boolean) {
         viewModelScope.launch { prefs.setVoiceCommandControl(enabled) }
+    }
+
+    fun setAiAssistantEnabled(enabled: Boolean) {
+        playUiClick()
+        viewModelScope.launch { prefs.setAiAssistantEnabled(enabled) }
+    }
+
+    fun setAiAssistantTriggerMode(mode: AiAssistantTriggerMode) {
+        playUiClick()
+        viewModelScope.launch { prefs.setAiAssistantTriggerMode(mode) }
+    }
+
+    fun setAiAssistantDelaySeconds(seconds: Int) {
+        playUiClick()
+        viewModelScope.launch { prefs.setAiAssistantDelaySeconds(seconds) }
+    }
+
+    fun setAiBusyModeEnabled(enabled: Boolean) {
+        playUiClick()
+        viewModelScope.launch { prefs.setAiBusyModeEnabled(enabled) }
+    }
+
+    fun setAiAssistantLanguageMode(mode: AiAssistantLanguageMode) {
+        playUiClick()
+        viewModelScope.launch { prefs.setAiAssistantLanguageMode(mode) }
+    }
+
+    fun setAiAssistantOwnerName(name: String) {
+        viewModelScope.launch { prefs.setAiAssistantOwnerName(name) }
+    }
+
+    fun setAiAssistantAutoRecord(enabled: Boolean) {
+        playUiClick()
+        viewModelScope.launch { prefs.setAiAssistantAutoRecord(enabled) }
     }
 
     fun selectActiveVibrationPattern(id: Long) {
@@ -1571,6 +2634,8 @@ class DotDialViewModel(application: Application) : AndroidViewModel(application)
         ringtonePlayer.stop()
         vibEngine.stop()
         voice.stopListening()
+        aiAssistantEngine.release()
+        voiceChangerEngine.release()
         recorder.stopPlayback()
         uiSounds.release()
         audioRoutes.release()

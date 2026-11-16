@@ -2,16 +2,20 @@ package com.example
 
 import android.Manifest
 import android.app.role.RoleManager
+import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.telecom.TelecomManager
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
@@ -65,6 +69,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -76,12 +82,14 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavDestination
@@ -101,6 +109,7 @@ import com.example.ui.screens.AiCommandBottomSheet
 import com.example.ui.screens.AnalyticsScreen
 import com.example.ui.screens.ContactsScreen
 import com.example.ui.screens.DialerScreen
+import com.example.ui.screens.FirstLaunchGoogleSignInDialog
 import com.example.ui.screens.HistoryScreen
 import com.example.ui.screens.IncomingFloatingTopBanner
 import com.example.ui.screens.SettingsScreen
@@ -108,6 +117,9 @@ import com.example.ui.screens.StatusBarCallPill
 import com.example.ui.screens.VaultScreen
 import com.example.data.preferences.DialerSettings
 import com.example.ui.theme.DotDialTheme
+import com.example.ui.theme.LocalDotDialStyle
+import com.example.ui.theme.LocalUiHapticPulse
+import com.example.ui.theme.resolveSystemBarsUseDarkIcons
 import com.example.viewmodel.AppRoute
 import com.example.viewmodel.DotDialViewModel
 import com.example.widget.DotDialContactWidgetProvider
@@ -183,6 +195,12 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+private tailrec fun Context.findComponentActivity(): ComponentActivity? = when (this) {
+    is ComponentActivity -> this
+    is ContextWrapper -> baseContext.findComponentActivity()
+    else -> null
+}
+
 private fun extractDialNumber(intent: Intent?): String? {
     val data = intent?.data ?: return null
     return if (data.scheme == "tel") data.schemeSpecificPart else null
@@ -204,6 +222,7 @@ private fun DotDialAppRoot(
 ) {
     val context = LocalContext.current
     val settings by viewModel.settings.collectAsStateWithLifecycle()
+    val firstLaunchSignInReady by viewModel.firstLaunchSignInReady.collectAsStateWithLifecycle()
     val statusMessage by viewModel.statusMessage.collectAsStateWithLifecycle()
     val navRequest by viewModel.navigationRequest.collectAsStateWithLifecycle()
     val isCallIdle by remember(viewModel) {
@@ -211,6 +230,19 @@ private fun DotDialAppRoot(
             .map { it.lifecycle == CallLifecycleState.IDLE }
             .distinctUntilChanged()
     }.collectAsStateWithLifecycle(initialValue = true)
+
+    var showFirstLaunchSignInDialog by remember { mutableStateOf(false) }
+    LaunchedEffect(firstLaunchSignInReady, isCallIdle) {
+        if (firstLaunchSignInReady && isCallIdle) {
+            showFirstLaunchSignInDialog = true
+            viewModel.dismissGoogleSignInPrompt()
+        }
+    }
+    LaunchedEffect(settings.signedInGoogleEmail) {
+        if (settings.signedInGoogleEmail.isNotBlank()) {
+            showFirstLaunchSignInDialog = false
+        }
+    }
 
     var showAiSheet by remember { mutableStateOf(false) }
     var supportedRefreshRates by remember { mutableStateOf(listOf(60, 90, 120)) }
@@ -251,6 +283,24 @@ private fun DotDialAppRoot(
     ) { results ->
         hasPermissions = results.values.all { it }
         viewModel.syncDeviceContactsAndLogs()
+    }
+
+    val driveUiState by viewModel.driveUiState.collectAsStateWithLifecycle()
+    val googleAuthState by viewModel.googleAuthState.collectAsStateWithLifecycle()
+    val driveConsentLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        viewModel.onDriveConsentActivityResult(result.data)
+    }
+
+    LaunchedEffect(driveUiState.pendingConsentIntent) {
+        val pending = driveUiState.pendingConsentIntent ?: return@LaunchedEffect
+        viewModel.consumeDrivePendingConsent()
+        runCatching {
+            driveConsentLauncher.launch(IntentSenderRequest.Builder(pending).build())
+        }.onFailure { err ->
+            viewModel.showMessage(err.localizedMessage ?: "Unable to launch Google Drive authorization.")
+        }
     }
 
     val roleLauncher = rememberLauncherForActivityResult(
@@ -325,6 +375,7 @@ private fun DotDialAppRoot(
 
     DotDialTheme(
         preset = settings.themePreset,
+        autoDayNightThemeEnabled = settings.autoDayNightThemeEnabled,
         amoledBlackEnabled = settings.amoledBlackEnabled,
         dotDensity = if (settings.ultraSmoothMode) minOf(settings.dotDensity, 0.35f) else settings.dotDensity,
         fontPreset = settings.fontPreset,
@@ -337,6 +388,63 @@ private fun DotDialAppRoot(
         customAccentHex = settings.customAccentHex,
         customTextHex = settings.customTextHex
     ) {
+        val dotStyle = LocalDotDialStyle.current
+        val themeBg = MaterialTheme.colorScheme.background
+        val (useDarkStatusIcons, useDarkNavIcons) = remember(
+            settings.uiBackgroundMode,
+            settings.amoledBlackEnabled,
+            settings.dotMatrixBgHex,
+            settings.autoDayNightThemeEnabled,
+            settings.colorPlateStyle,
+            settings.solidBgHex,
+            settings.gradientStartHex,
+            settings.gradientEndHex,
+            settings.wallpaperPath,
+            settings.wallpaperDimStrength,
+            themeBg,
+            dotStyle.isDark
+        ) {
+            resolveSystemBarsUseDarkIcons(
+                settings = settings,
+                themeBackground = themeBg,
+                isThemeDark = dotStyle.isDark
+            )
+        }
+        val view = LocalView.current
+        DisposableEffect(context, view, useDarkStatusIcons, useDarkNavIcons) {
+            if (!view.isInEditMode) {
+                val activity = context.findComponentActivity()
+                if (activity != null) {
+                    activity.enableEdgeToEdge(
+                        statusBarStyle = if (useDarkStatusIcons) {
+                            SystemBarStyle.light(
+                                android.graphics.Color.TRANSPARENT,
+                                android.graphics.Color.TRANSPARENT
+                            )
+                        } else {
+                            SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+                        },
+                        navigationBarStyle = if (useDarkNavIcons) {
+                            SystemBarStyle.light(
+                                android.graphics.Color.TRANSPARENT,
+                                android.graphics.Color.argb(0x40, 0x00, 0x00, 0x00)
+                            )
+                        } else {
+                            SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+                        }
+                    )
+                    WindowCompat.getInsetsController(activity.window, view).apply {
+                        isAppearanceLightStatusBars = useDarkStatusIcons
+                        isAppearanceLightNavigationBars = useDarkNavIcons
+                    }
+                }
+            }
+            onDispose {}
+        }
+
+        CompositionLocalProvider(
+            LocalUiHapticPulse provides { viewModel.pulseUiHaptic() }
+        ) {
         BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
             val useRail = maxWidth >= 600.dp
 
@@ -354,6 +462,7 @@ private fun DotDialAppRoot(
                                     selected = selected,
                                     onClick = {
                                         viewModel.playUiClick()
+                                        viewModel.pulseUiHaptic()
                                         navigateTab(navController, tab.route)
                                     },
                                     icon = {
@@ -383,6 +492,7 @@ private fun DotDialAppRoot(
                                 SmallFloatingActionButton(
                                     onClick = {
                                         viewModel.playUiClick()
+                                        viewModel.pulseUiHaptic()
                                         showAiSheet = true
                                     },
                                     containerColor = MaterialTheme.colorScheme.primary,
@@ -404,6 +514,7 @@ private fun DotDialAppRoot(
                                     currentDestination = currentDestination,
                                     onTabSelected = { route ->
                                         viewModel.playUiClick()
+                                        viewModel.pulseUiHaptic()
                                         navigateTab(navController, route)
                                     }
                                 )
@@ -486,20 +597,34 @@ private fun DotDialAppRoot(
                                         onSimulateIncoming = { spam ->
                                             viewModel.simulateIncomingCall(spamTest = spam, compactPopup = true)
                                         },
-                                        onOpenAiCommand = { showAiSheet = true }
+                                        onOpenAiCommand = { showAiSheet = true },
+                                        aiAssistantEnabled = settings.aiAssistantEnabled,
+                                        aiBusyModeEnabled = settings.aiBusyModeEnabled,
+                                        onToggleBusyMode = viewModel::setAiBusyModeEnabled,
+                                        signedInName = settings.signedInGoogleName,
+                                        signedInEmail = settings.signedInGoogleEmail,
+                                        onGoogleAccountClick = {
+                                            if (settings.signedInGoogleEmail.isBlank()) {
+                                                viewModel.signInWithGoogle(context)
+                                            } else {
+                                                navigateTab(navController, AppRoute.Settings)
+                                            }
+                                        }
                                     )
                                 }
 
                                 composable<AppRoute.History> {
                                     val filteredHistory by viewModel.filteredHistory.collectAsStateWithLifecycle()
-                                    val allContacts by viewModel.contacts.collectAsStateWithLifecycle()
+                                    val groupedHistory by viewModel.groupedHistory.collectAsStateWithLifecycle()
                                     val historyFilter by viewModel.historyFilter.collectAsStateWithLifecycle()
                                     HistoryScreen(
                                         logs = filteredHistory,
-                                        contacts = allContacts,
+                                        groupedHistory = groupedHistory,
                                         selectedFilter = historyFilter,
                                         onSelectFilter = viewModel::setHistoryFilter,
                                         onCallNumber = viewModel::placeCall,
+                                        onVideoCallNumber = viewModel::placeVideoCall,
+                                        onStatusMessage = viewModel::showMessage,
                                         onDeleteLog = viewModel::deleteCallLog,
                                         onClearHistory = viewModel::clearCallHistory,
                                         onExportJsonBackup = viewModel::exportBackupJson,
@@ -517,6 +642,15 @@ private fun DotDialAppRoot(
                                     val contactSearch by viewModel.contactSearchQuery.collectAsStateWithLifecycle()
                                     val vibrationPatterns by viewModel.vibrationPatterns.collectAsStateWithLifecycle()
                                     val discoveredGoogleAccounts by viewModel.discoveredGoogleAccounts.collectAsStateWithLifecycle()
+                                    val resolvedContactAccount = remember(
+                                        settings.newContactStorageMode,
+                                        settings.preferredGoogleContactAccount,
+                                        settings.signedInGoogleEmail,
+                                        settings.syncedGoogleAccounts,
+                                        discoveredGoogleAccounts
+                                    ) {
+                                        viewModel.resolveTargetGoogleContactAccount(settings)
+                                    }
                                     ContactsScreen(
                                         contacts = contacts,
                                         searchQuery = contactSearch,
@@ -525,6 +659,8 @@ private fun DotDialAppRoot(
                                         googleSyncEnabled = settings.googleSyncEnabled,
                                         discoveredGoogleAccounts = discoveredGoogleAccounts,
                                         syncedGoogleAccounts = settings.syncedGoogleAccounts,
+                                        newContactStorageMode = settings.newContactStorageMode,
+                                        targetGoogleContactAccount = resolvedContactAccount,
                                         onSearchChange = viewModel::setContactSearchQuery,
                                         onSyncDeviceContacts = { viewModel.syncDeviceContactsAndLogs(false) },
                                         onToggleGoogleSync = viewModel::setGoogleSyncEnabled,
@@ -558,6 +694,8 @@ private fun DotDialAppRoot(
                                         onAssignPhoto = viewModel::assignContactPhoto,
                                         onAssignCallingCard = viewModel::assignContactCallingCard,
                                         onAssignVideoBackdrop = viewModel::assignContactVideoBackdrop,
+                                        onAssignBackdropPhoto = viewModel::assignContactBackdropPhoto,
+                                        onAssignBackdropMode = viewModel::assignContactBackdropMode,
                                         onAssignVibrationPattern = viewModel::assignContactVibrationPattern,
                                         onDeleteContact = viewModel::deleteContact,
                                         onPinContactWidget = pinWidgetAction
@@ -604,12 +742,27 @@ private fun DotDialAppRoot(
                                 }
 
                                 composable<AppRoute.Settings> {
+                                    val contacts by viewModel.contacts.collectAsStateWithLifecycle()
                                     val vibrationPatterns by viewModel.vibrationPatterns.collectAsStateWithLifecycle()
+                                    val discoveredGoogleAccounts by viewModel.discoveredGoogleAccounts.collectAsStateWithLifecycle()
+                                    val availableAccounts = remember(discoveredGoogleAccounts, settings.syncedGoogleAccounts) {
+                                        (discoveredGoogleAccounts + settings.syncedGoogleAccounts.toList()).distinct()
+                                    }
+                                    val resolvedContactAccount = remember(
+                                        settings.newContactStorageMode,
+                                        settings.preferredGoogleContactAccount,
+                                        settings.signedInGoogleEmail,
+                                        settings.syncedGoogleAccounts,
+                                        discoveredGoogleAccounts
+                                    ) {
+                                        viewModel.resolveTargetGoogleContactAccount(settings)
+                                    }
                                     SettingsScreen(
                                         settings = settings,
                                         supportedRefreshRates = supportedRefreshRates,
                                         vibrationPatterns = vibrationPatterns,
                                         onSelectTheme = viewModel::setThemePreset,
+                                        onToggleAutoDayNight = viewModel::setAutoDayNightThemeEnabled,
                                         onToggleAmoledBlack = viewModel::setAmoledBlack,
                                         onUpdateCustomColors = viewModel::setCustomThemeColors,
                                         onDotDensityChange = viewModel::setDotDensity,
@@ -622,10 +775,16 @@ private fun DotDialAppRoot(
                                         onSetAdaptiveRefreshRate = viewModel::setAdaptiveRefreshRate,
                                         onSetUltraSmoothMode = viewModel::setUltraSmoothMode,
                                         onSetUiSounds = viewModel::setUiSoundsEnabled,
+                                        onSetUiVibration = viewModel::setUiVibrationEnabled,
                                         onSetDialpadSoundStyle = viewModel::setDialpadSoundStyle,
                                         onSetAudioOutputMode = viewModel::setAudioOutputMode,
                                         onPickCustomRingtone = viewModel::setCustomRingtoneUri,
+                                        onSelectDefaultBackdropMode = viewModel::setDefaultBackdropMode,
                                         onPickDefaultVideo = viewModel::setDefaultVideoBackdrop,
+                                        onPickDefaultPhoto = viewModel::setDefaultPhotoBackdrop,
+                                        onPickDefaultCallingCard = viewModel::setDefaultCallingCardBackdrop,
+                                        contacts = contacts,
+                                        onAssignContactCallingCard = viewModel::assignContactCallingCard,
                                         onRedTintStrengthChange = viewModel::setVideoRedTintStrength,
                                         onSelectVibrationPattern = viewModel::selectActiveVibrationPattern,
                                         onTestVibrationPattern = viewModel::testVibrationPattern,
@@ -646,9 +805,35 @@ private fun DotDialAppRoot(
                                         onWallpaperDimChange = viewModel::setWallpaperDimStrength,
                                         onSetVaultPin = viewModel::setVaultPin,
                                         onExportBackupJson = viewModel::exportBackupJson,
+                                        onExportSettingsJson = viewModel::exportSettingsJson,
                                         onExportContactsVcf = viewModel::exportContactsVcf,
                                         onRestoreBackupJson = viewModel::restoreBackupJson,
-                                        onPinContactWidget = pinWidgetAction
+                                        onRestoreSettingsJson = viewModel::restoreSettingsJson,
+                                        driveUiState = driveUiState,
+                                        onConnectDrive = { viewModel.connectGoogleDrive() },
+                                        onDisconnectDrive = viewModel::disconnectGoogleDrive,
+                                        onBackupToDrive = viewModel::backupToGoogleDrive,
+                                        onRefreshDriveBackups = viewModel::refreshDriveBackups,
+                                        onRestoreFromDrive = viewModel::restoreFromGoogleDrive,
+                                        onSetAiAssistantEnabled = viewModel::setAiAssistantEnabled,
+                                        onSetAiBusyMode = viewModel::setAiBusyModeEnabled,
+                                        onSetAiOwnerName = viewModel::setAiAssistantOwnerName,
+                                        onSetAiTriggerMode = viewModel::setAiAssistantTriggerMode,
+                                        onSetAiDelaySeconds = viewModel::setAiAssistantDelaySeconds,
+                                        onSetAiLanguageMode = viewModel::setAiAssistantLanguageMode,
+                                        onSetAiAutoRecord = viewModel::setAiAssistantAutoRecord,
+                                        onPreviewAiVoice = viewModel::previewAiAssistantVoice,
+                                        onPinContactWidget = pinWidgetAction,
+                                        googleAuthState = googleAuthState,
+                                        onGoogleSignInOrSwitch = { viewModel.signInWithGoogle(context) },
+                                        onGoogleSignOut = viewModel::signOutGoogleAccount,
+                                        availableGoogleAccounts = availableAccounts,
+                                        resolvedTargetContactAccount = resolvedContactAccount,
+                                        onSetNewContactStorageMode = viewModel::setNewContactStorageMode,
+                                        onSelectPreferredGoogleContactAccount = viewModel::setPreferredGoogleContactAccount,
+                                        onSetVoiceChangerMode = viewModel::setVoiceChangerMode,
+                                        onSelectVoiceChangerPreset = viewModel::setVoiceChangerPreset,
+                                        onPreviewVoiceChangerPreset = viewModel::previewVoiceChangerPreset
                                     )
                                 }
                             }
@@ -660,6 +845,17 @@ private fun DotDialAppRoot(
                     viewModel = viewModel,
                     settings = settings
                 )
+
+                if (showFirstLaunchSignInDialog && isCallIdle) {
+                    FirstLaunchGoogleSignInDialog(
+                        authState = googleAuthState,
+                        onSignInClick = { viewModel.signInWithGoogle(context) },
+                        onSkipClick = {
+                            showFirstLaunchSignInDialog = false
+                            viewModel.dismissGoogleSignInPrompt()
+                        }
+                    )
+                }
 
                 if (showAiSheet) {
                     val aiCommandState by viewModel.aiCommandState.collectAsStateWithLifecycle()
@@ -677,6 +873,7 @@ private fun DotDialAppRoot(
                     )
                 }
             }
+        }
         }
     }
 }
@@ -714,10 +911,13 @@ private fun CallOverlaysHost(
         ) {
             IncomingFloatingTopBanner(
                 session = callSession,
+                aiAssistantEnabled = settings.aiAssistantEnabled,
                 onAnswerToStatusBar = { viewModel.answerActiveCall(toStatusBar = true) },
                 onReject = viewModel::endActiveCall,
                 onSwipeUpMute = viewModel::swipeUpMuteIncomingCall,
-                onExpandFullScreen = viewModel::openFullCallScreen
+                onExpandFullScreen = viewModel::openFullCallScreen,
+                onStartAiAssistant = viewModel::startAiAssistantForCall,
+                onCancelAiCountdown = viewModel::cancelAiAutoAnswerCountdown
             )
         }
 
@@ -764,7 +964,16 @@ private fun CallOverlaysHost(
                 onSimulateVoicePhrase = viewModel::executeAiOrVoiceCommand,
                 onUpdateNotes = viewModel::updateCallNotes,
                 onSendDtmfDigit = viewModel::sendInCallDtmf,
-                onClearDtmfDigits = viewModel::clearInCallDtmf
+                onClearDtmfDigits = viewModel::clearInCallDtmf,
+                onStartAiAssistantNow = viewModel::startAiAssistantForCall,
+                onCancelAiCountdown = viewModel::cancelAiAutoAnswerCountdown,
+                onTakeOverFromAi = viewModel::takeOverFromAiAssistant,
+                onSendSimulatedCallerSpeech = viewModel::sendSimulatedCallerReplyToAi,
+                aiAssistantEnabled = settings.aiAssistantEnabled,
+                voiceChangerMode = settings.voiceChangerMode,
+                selectedVoicePreset = settings.voiceChangerPreset,
+                onSelectVoicePreset = viewModel::setVoiceChangerPreset,
+                onToggleIncomingRingMute = viewModel::toggleIncomingRingMuteInPlace
             )
         }
     }

@@ -70,6 +70,8 @@ data class ContactEntity(
     val isBlocked: Boolean = false,
     val spamScore: Int = 0,
     val videoBackdropUri: String? = null,
+    val backdropPhotoUri: String? = null,
+    val callerBackdropMode: String = "",
     val vibrationPatternId: Long = 1L,
     val notes: String = "",
     val additionalNumbersJson: String = "[]",

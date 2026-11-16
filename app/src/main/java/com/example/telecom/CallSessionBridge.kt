@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import android.telecom.Call
 import android.telecom.CallAudioState
 import android.telecom.TelecomManager
@@ -14,6 +15,9 @@ import android.telecom.VideoProfile
 import androidx.core.content.ContextCompat
 import com.example.data.local.CallDirection
 import com.example.data.local.ContactEntity
+import com.example.data.preferences.CallerBackdropMode
+import com.example.data.preferences.DialerSettings
+import com.example.data.preferences.VoiceChangerPreset
 import com.example.data.system.ActiveAudioRoute
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -34,6 +38,30 @@ enum class CallDisplayMode {
     FULL_SCREEN
 }
 
+enum class AiCallPhase {
+    IDLE,
+    RING_COUNTDOWN,
+    GREETING,
+    SPEAKING,
+    LISTENING,
+    THINKING,
+    HANDED_OVER
+}
+
+data class AiTranscriptTurn(
+    val speaker: String,
+    val text: String,
+    val languageCode: String,
+    val timestampMs: Long = System.currentTimeMillis()
+)
+
+data class ResolvedCallerBackdrop(
+    val mode: CallerBackdropMode = CallerBackdropMode.NONE,
+    val videoUri: String? = null,
+    val photoUri: String? = null,
+    val callingCardUri: String? = null
+)
+
 data class CallSessionState(
     val lifecycle: CallLifecycleState = CallLifecycleState.IDLE,
     val displayMode: CallDisplayMode = CallDisplayMode.FULL_SCREEN,
@@ -41,6 +69,8 @@ data class CallSessionState(
     val phoneNumber: String = "",
     val contactId: Long? = null,
     val contactPhotoUri: String? = null,
+    val activeBackdropMode: CallerBackdropMode = CallerBackdropMode.NONE,
+    val photoBackdropUri: String? = null,
     val callingCardUri: String? = null,
     val videoBackdropUri: String? = null,
     val vibrationPatternId: Long = 1L,
@@ -59,7 +89,16 @@ data class CallSessionState(
     val isSystemTelecomCall: Boolean = false,
     val lastDirection: CallDirection = CallDirection.OUTGOING,
     val miniNotepadText: String = "",
-    val dtmfDigits: String = ""
+    val dtmfDigits: String = "",
+    val isAiAssistantActive: Boolean = false,
+    val aiPhase: AiCallPhase = AiCallPhase.IDLE,
+    val aiActiveLanguageCode: String = "EN",
+    val aiOwnerName: String = "",
+    val aiCountdownSecondsLeft: Int = 0,
+    val aiCallerPurposeTag: String = "",
+    val aiTranscript: List<AiTranscriptTurn> = emptyList(),
+    val voiceChangerPreset: VoiceChangerPreset = VoiceChangerPreset.NORMAL,
+    val isVoiceChangerDspRunning: Boolean = false
 )
 
 object CallSessionBridge {
@@ -125,6 +164,67 @@ object CallSessionBridge {
         }
     }
 
+    fun resolveBackdropSpec(contact: ContactEntity?, settings: DialerSettings): ResolvedCallerBackdrop {
+        if (contact != null) {
+            val contactExplicitMode = if (contact.callerBackdropMode.isNotBlank()) {
+                CallerBackdropMode.fromId(contact.callerBackdropMode)
+            } else {
+                when {
+                    !contact.videoBackdropUri.isNullOrBlank() -> CallerBackdropMode.VIDEO
+                    !contact.backdropPhotoUri.isNullOrBlank() -> CallerBackdropMode.PHOTO
+                    !contact.callingCardUri.isNullOrBlank() -> CallerBackdropMode.CALLING_CARD
+                    else -> CallerBackdropMode.NONE
+                }
+            }
+            when (contactExplicitMode) {
+                CallerBackdropMode.VIDEO -> if (!contact.videoBackdropUri.isNullOrBlank()) {
+                    return ResolvedCallerBackdrop(
+                        mode = CallerBackdropMode.VIDEO,
+                        videoUri = contact.videoBackdropUri
+                    )
+                }
+                CallerBackdropMode.PHOTO -> {
+                    val uri = contact.backdropPhotoUri ?: contact.photoUri
+                    if (!uri.isNullOrBlank()) {
+                        return ResolvedCallerBackdrop(
+                            mode = CallerBackdropMode.PHOTO,
+                            photoUri = uri
+                        )
+                    }
+                }
+                CallerBackdropMode.CALLING_CARD -> if (!contact.callingCardUri.isNullOrBlank()) {
+                    return ResolvedCallerBackdrop(
+                        mode = CallerBackdropMode.CALLING_CARD,
+                        callingCardUri = contact.callingCardUri
+                    )
+                }
+                CallerBackdropMode.NONE -> Unit
+            }
+        }
+
+        return when (settings.defaultBackdropMode) {
+            CallerBackdropMode.VIDEO -> if (!settings.defaultVideoBackdropUri.isNullOrBlank()) {
+                ResolvedCallerBackdrop(
+                    mode = CallerBackdropMode.VIDEO,
+                    videoUri = settings.defaultVideoBackdropUri
+                )
+            } else ResolvedCallerBackdrop()
+            CallerBackdropMode.PHOTO -> if (!settings.defaultPhotoBackdropUri.isNullOrBlank()) {
+                ResolvedCallerBackdrop(
+                    mode = CallerBackdropMode.PHOTO,
+                    photoUri = settings.defaultPhotoBackdropUri
+                )
+            } else ResolvedCallerBackdrop()
+            CallerBackdropMode.CALLING_CARD -> if (!settings.defaultCallingCardUri.isNullOrBlank()) {
+                ResolvedCallerBackdrop(
+                    mode = CallerBackdropMode.CALLING_CARD,
+                    callingCardUri = settings.defaultCallingCardUri
+                )
+            } else ResolvedCallerBackdrop()
+            CallerBackdropMode.NONE -> ResolvedCallerBackdrop()
+        }
+    }
+
     fun startInAppCallSession(
         displayName: String,
         phoneNumber: String,
@@ -134,7 +234,7 @@ object CallSessionBridge {
         isSpam: Boolean,
         spamScore: Int,
         spamReason: String,
-        defaultVideoUri: String?,
+        backdrop: ResolvedCallerBackdrop,
         defaultVibrationId: Long,
         initialAudioRoute: ActiveAudioRoute,
         bluetoothConnected: Boolean
@@ -151,8 +251,10 @@ object CallSessionBridge {
             phoneNumber = phoneNumber,
             contactId = contact?.id,
             contactPhotoUri = contact?.photoUri,
-            callingCardUri = contact?.callingCardUri,
-            videoBackdropUri = contact?.videoBackdropUri ?: defaultVideoUri,
+            activeBackdropMode = backdrop.mode,
+            photoBackdropUri = backdrop.photoUri,
+            callingCardUri = backdrop.callingCardUri,
+            videoBackdropUri = backdrop.videoUri,
             vibrationPatternId = contact?.vibrationPatternId ?: defaultVibrationId,
             isSpamWarning = isSpam,
             spamReason = spamReason,
@@ -191,6 +293,19 @@ object CallSessionBridge {
             )
         }
         return true
+    }
+
+    fun setRingMutedInPlace(muted: Boolean) {
+        _session.update { it.copy(isRingMuted = muted) }
+    }
+
+    fun updateVoiceChangerState(preset: VoiceChangerPreset, dspRunning: Boolean) {
+        _session.update {
+            it.copy(
+                voiceChangerPreset = preset,
+                isVoiceChangerDspRunning = dspRunning
+            )
+        }
     }
 
     fun setDisplayMode(mode: CallDisplayMode) {
@@ -288,21 +403,76 @@ object CallSessionBridge {
         _session.update { it.copy(dtmfDigits = "") }
     }
 
+    fun updateAiCountdown(secondsLeft: Int) {
+        _session.update {
+            it.copy(
+                aiPhase = if (secondsLeft > 0) AiCallPhase.RING_COUNTDOWN else it.aiPhase,
+                aiCountdownSecondsLeft = secondsLeft.coerceAtLeast(0)
+            )
+        }
+    }
+
+    fun updateAiAssistantState(
+        active: Boolean,
+        phase: AiCallPhase,
+        languageCode: String = _session.value.aiActiveLanguageCode,
+        ownerName: String = _session.value.aiOwnerName,
+        purposeTag: String = _session.value.aiCallerPurposeTag
+    ) {
+        _session.update {
+            it.copy(
+                isAiAssistantActive = active,
+                aiPhase = phase,
+                aiActiveLanguageCode = languageCode,
+                aiOwnerName = ownerName,
+                aiCountdownSecondsLeft = 0,
+                aiCallerPurposeTag = purposeTag
+            )
+        }
+    }
+
+    fun appendAiTranscriptTurn(speaker: String, text: String, languageCode: String) {
+        val clean = text.trim()
+        if (clean.isEmpty()) return
+        _session.update {
+            it.copy(
+                aiTranscript = it.aiTranscript + AiTranscriptTurn(
+                    speaker = speaker,
+                    text = clean,
+                    languageCode = languageCode
+                )
+            )
+        }
+    }
+
+    fun clearAiAssistantState() {
+        _session.update {
+            it.copy(
+                isAiAssistantActive = false,
+                aiPhase = AiCallPhase.IDLE,
+                aiCountdownSecondsLeft = 0
+            )
+        }
+    }
+
     fun enrichWithContact(
         contact: ContactEntity?,
         isSpam: Boolean,
         spamScore: Int,
         spamReason: String,
-        defaultVideoUri: String?,
+        backdrop: ResolvedCallerBackdrop,
         defaultVibrationId: Long
     ) {
         _session.update { current ->
+            val resolvedName = contact?.name?.takeIf { it.isNotBlank() } ?: current.displayName
             current.copy(
-                displayName = contact?.name ?: current.displayName,
+                displayName = resolvedName,
                 contactId = contact?.id ?: current.contactId,
                 contactPhotoUri = contact?.photoUri ?: current.contactPhotoUri,
-                callingCardUri = contact?.callingCardUri ?: current.callingCardUri,
-                videoBackdropUri = contact?.videoBackdropUri ?: current.videoBackdropUri ?: defaultVideoUri,
+                activeBackdropMode = backdrop.mode,
+                photoBackdropUri = backdrop.photoUri,
+                callingCardUri = backdrop.callingCardUri,
+                videoBackdropUri = backdrop.videoUri,
                 vibrationPatternId = contact?.vibrationPatternId ?: defaultVibrationId,
                 isSpamWarning = isSpam || current.isSpamWarning,
                 spamScore = maxOf(spamScore, current.spamScore),
@@ -332,6 +502,35 @@ object CallSessionBridge {
                 telecom.placeCall(uri, null)
             } else {
                 val intent = Intent(Intent.ACTION_CALL, uri).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(intent)
+            }
+            true
+        }.getOrDefault(false)
+    }
+
+    fun placeVideoCallIfSupported(context: Context, phoneNumber: String): Boolean {
+        val clean = phoneNumber.trim()
+        if (clean.isEmpty()) return false
+        val hasCallPermission = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.CALL_PHONE
+        ) == PackageManager.PERMISSION_GRANTED
+        val hasTelephony = context.packageManager.hasSystemFeature(PackageManager.FEATURE_TELEPHONY)
+        if (!hasTelephony || !hasCallPermission) return false
+
+        return runCatching {
+            val telecom = context.getSystemService(Context.TELECOM_SERVICE) as? TelecomManager
+            val uri = Uri.fromParts("tel", clean, null)
+            val extras = Bundle().apply {
+                putInt(TelecomManager.EXTRA_START_CALL_WITH_VIDEO_STATE, VideoProfile.STATE_BIDIRECTIONAL)
+            }
+            if (telecom != null && isDefaultDialer(context)) {
+                telecom.placeCall(uri, extras)
+            } else {
+                val intent = Intent(Intent.ACTION_CALL, uri).apply {
+                    putExtra(TelecomManager.EXTRA_START_CALL_WITH_VIDEO_STATE, VideoProfile.STATE_BIDIRECTIONAL)
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
                 context.startActivity(intent)

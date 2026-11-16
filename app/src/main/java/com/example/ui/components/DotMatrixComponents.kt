@@ -79,10 +79,12 @@ import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.example.R
+import com.example.data.preferences.CallerBackdropMode
 import com.example.data.preferences.ColorPlateStyle
 import com.example.data.preferences.DialerSettings
 import com.example.data.preferences.UiBackgroundMode
 import com.example.ui.theme.LocalDotDialStyle
+import com.example.ui.theme.LocalUiHapticPulse
 import java.io.File
 import kotlin.math.PI
 import kotlin.math.roundToInt
@@ -101,15 +103,17 @@ fun DotDialBackgroundHost(
 
     when (settings.uiBackgroundMode) {
         UiBackgroundMode.DOT_MATRIX -> {
-            val baseColor = remember(settings.amoledBlackEnabled, settings.dotMatrixBgHex, themeBg) {
+            val baseColor = remember(settings.amoledBlackEnabled, settings.dotMatrixBgHex, themeBg, dotStyle.isDark) {
                 when {
-                    settings.amoledBlackEnabled -> Color.Black
+                    settings.amoledBlackEnabled && dotStyle.isDark -> Color.Black
+                    dotStyle.isDark && settings.dotMatrixBgHex != 0L -> Color(settings.dotMatrixBgHex)
+                    !dotStyle.isDark && settings.autoDayNightThemeEnabled -> themeBg
                     settings.dotMatrixBgHex != 0L -> Color(settings.dotMatrixBgHex)
                     else -> themeBg
                 }
             }
-            val effectiveDotColor = remember(baseColor, dotStyle.dotGridColor, settings.dotMatrixBgHex) {
-                if (settings.dotMatrixBgHex == 0L) {
+            val effectiveDotColor = remember(baseColor, dotStyle.dotGridColor, settings.dotMatrixBgHex, dotStyle.isDark) {
+                if (settings.dotMatrixBgHex == 0L || (!dotStyle.isDark && settings.autoDayNightThemeEnabled)) {
                     dotStyle.dotGridColor
                 } else if (baseColor.luminance() < 0.45f) {
                     Color.White.copy(alpha = 0.16f)
@@ -341,17 +345,28 @@ fun DotMatrixTagChip(
     label: String,
     active: Boolean = false,
     onClick: (() -> Unit)? = null,
-    testTag: String? = null
+    testTag: String? = null,
+    modifier: Modifier = Modifier
 ) {
     val bg = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
     val fg = if (active) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
     val border = if (active) MaterialTheme.colorScheme.primary else LocalDotDialStyle.current.hairlineBorder
+    val hapticPulse = LocalUiHapticPulse.current
 
     Surface(
-        modifier = Modifier
+        modifier = modifier
             .minimumInteractiveComponentSize()
             .then(if (testTag != null) Modifier.testTag(testTag) else Modifier)
-            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
+            .then(
+                if (onClick != null) {
+                    Modifier.clickable {
+                        hapticPulse()
+                        onClick()
+                    }
+                } else {
+                    Modifier
+                }
+            ),
         shape = RoundedCornerShape(50),
         color = bg,
         contentColor = fg,
@@ -360,7 +375,7 @@ fun DotMatrixTagChip(
         Row(
             modifier = Modifier.padding(horizontal = 13.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
+            horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally)
         ) {
             if (active) {
                 Box(
@@ -560,7 +575,9 @@ fun GlyphCallVisualizer(
 @OptIn(UnstableApi::class)
 @Composable
 fun CallerVideoBackdrop(
+    backdropMode: CallerBackdropMode = CallerBackdropMode.NONE,
     videoUriString: String?,
+    photoUriString: String? = null,
     callingCardUriString: String? = null,
     redTintStrength: Float,
     isRingingOrActive: Boolean,
@@ -572,7 +589,7 @@ fun CallerVideoBackdrop(
 
     Box(modifier = modifier.fillMaxSize().background(baseBlack)) {
         when {
-            !videoUriString.isNullOrBlank() -> {
+            backdropMode == CallerBackdropMode.VIDEO && !videoUriString.isNullOrBlank() -> {
                 val exoPlayer = remember(videoUriString) {
                     ExoPlayer.Builder(context).build().apply {
                         setMediaItem(MediaItem.fromUri(Uri.parse(videoUriString)))
@@ -603,7 +620,15 @@ fun CallerVideoBackdrop(
                     modifier = Modifier.fillMaxSize()
                 )
             }
-            !callingCardUriString.isNullOrBlank() -> {
+            backdropMode == CallerBackdropMode.PHOTO && !photoUriString.isNullOrBlank() -> {
+                AsyncImage(
+                    model = Uri.parse(photoUriString),
+                    contentDescription = "Caller gallery photo backdrop",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+            backdropMode == CallerBackdropMode.CALLING_CARD && !callingCardUriString.isNullOrBlank() -> {
                 AsyncImage(
                     model = Uri.parse(callingCardUriString),
                     contentDescription = "Caller calling card backdrop",

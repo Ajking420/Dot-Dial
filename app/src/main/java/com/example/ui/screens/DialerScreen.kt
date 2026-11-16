@@ -8,6 +8,7 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,6 +24,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -96,6 +98,12 @@ fun DialerScreen(
     onPlaceCall: (String, ContactEntity?) -> Unit,
     onSimulateIncoming: (Boolean) -> Unit,
     onOpenAiCommand: () -> Unit,
+    aiAssistantEnabled: Boolean = false,
+    aiBusyModeEnabled: Boolean = false,
+    onToggleBusyMode: (Boolean) -> Unit = {},
+    signedInName: String = "",
+    signedInEmail: String = "",
+    onGoogleAccountClick: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -142,19 +150,31 @@ fun DialerScreen(
                         modifier = Modifier.testTag("dialer_brand_header")
                     )
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(
+                    modifier = Modifier
+                        .weight(1.25f, fill = false)
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    val userBadgeLabel = when {
+                        signedInName.isNotBlank() -> signedInName.substringBefore(" ").uppercase().take(10)
+                        signedInEmail.isNotBlank() -> signedInEmail.substringBefore("@").uppercase().take(10)
+                        else -> "SIGN IN"
+                    }
                     DotMatrixTagChip(
-                        label = "POPUP RING",
-                        active = false,
-                        onClick = { onSimulateIncoming(false) },
-                        testTag = "simulate_incoming_button"
+                        label = userBadgeLabel,
+                        active = signedInEmail.isNotBlank(),
+                        onClick = onGoogleAccountClick,
+                        testTag = "dialer_google_account_chip"
                     )
-                    DotMatrixTagChip(
-                        label = "SPAM",
-                        active = true,
-                        onClick = { onSimulateIncoming(true) },
-                        testTag = "simulate_spam_button"
-                    )
+                    if (aiAssistantEnabled) {
+                        DotMatrixTagChip(
+                            label = if (aiBusyModeEnabled) "BUSY AI" else "AI AUTO",
+                            active = aiBusyModeEnabled,
+                            onClick = { onToggleBusyMode(!aiBusyModeEnabled) },
+                            testTag = "dialer_ai_busy_chip"
+                        )
+                    }
                 }
             }
 

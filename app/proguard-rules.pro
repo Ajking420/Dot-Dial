@@ -19,10 +19,3 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
-
-# Keep runtime metadata used by Kotlin serialization and type-safe Navigation.
--keepattributes *Annotation*,Signature,InnerClasses,EnclosingMethod
--keep @kotlinx.serialization.Serializable class com.example.** { *; }
-
-# Room loads the generated database implementation by its conventional class name.
--keep class com.example.data.local.DotDialDatabase_Impl { *; }

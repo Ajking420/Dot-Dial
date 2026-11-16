@@ -38,4 +38,9 @@
     <string name="about_open_github">Open GitHub profile</string>
     <string name="about_engine_label">INTELLIGENCE</string>
     <string name="about_built_with_gemini">Built with Gemini</string>
+    <string name="about_telegram_label">TELEGRAM CHANNEL</string>
+    <string name="about_telegram_handle">t.me/aj_apurba_personal_builds</string>
+    <string name="about_open_telegram">Open Telegram channel</string>
+    <string name="about_dialer_philosophy_title">My Thinking On Nothing Inspired Dialer</string>
+    <string name="about_dialer_philosophy_subtitle">Tap to explore all features &amp; full changelog</string>
 </resources>

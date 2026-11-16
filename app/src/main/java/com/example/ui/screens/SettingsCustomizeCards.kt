@@ -58,11 +58,13 @@ import com.example.ui.theme.DialerFontPreset
 import com.example.ui.theme.DialerThemePreset
 import com.example.ui.theme.FontStyleMode
 import com.example.ui.theme.LocalDotDialStyle
+import com.example.ui.theme.LocalUiHapticPulse
 
 @Composable
 fun ThemeAppearanceSettingsCard(
     settings: DialerSettings,
     onSelectTheme: (DialerThemePreset) -> Unit,
+    onToggleAutoDayNight: (Boolean) -> Unit = {},
     onToggleAmoledBlack: (Boolean) -> Unit,
     onUpdateCustomColors: (Long, Long, Long, Long) -> Unit,
     onDotDensityChange: (Float) -> Unit
@@ -88,6 +90,14 @@ fun ThemeAppearanceSettingsCard(
                     color = MaterialTheme.colorScheme.onSurface
                 )
             }
+
+            SettingsSwitchRow(
+                title = "Auto System Day / Night Style",
+                subtitle = "Automatically toggle Light & Dark visual style based on system mode",
+                checked = settings.autoDayNightThemeEnabled,
+                onCheckedChange = onToggleAutoDayNight,
+                testTag = "auto_day_night_theme_switch"
+            )
 
             DialerThemePreset.entries.chunked(2).forEach { pair ->
                 Row(
@@ -419,6 +429,7 @@ fun DisplayAndAudioSettingsCard(
     onSetAdaptiveRefreshRate: (Boolean) -> Unit,
     onSetUltraSmoothMode: (Boolean) -> Unit,
     onSetUiSounds: (Boolean) -> Unit,
+    onSetUiVibration: (Boolean) -> Unit = {},
     onSetDialpadSoundStyle: (DialpadSoundStyle) -> Unit,
     onSetAudioOutputMode: (AudioOutputMode) -> Unit,
     onPickCustomRingtone: (Uri?) -> Unit
@@ -494,7 +505,7 @@ fun DisplayAndAudioSettingsCard(
 
             SettingsSwitchRow(
                 title = "Ultra-Smooth Low-Overdraw Mode",
-                subtitle = "Keeps Dot Matrix and wallpaper with reduced rendering cost for smoother scrolling",
+                subtitle = "Disables heavy text blur shadows for zero-jank scrolling",
                 checked = settings.ultraSmoothMode,
                 onCheckedChange = onSetUltraSmoothMode,
                 testTag = "ultra_smooth_switch"
@@ -527,6 +538,14 @@ fun DisplayAndAudioSettingsCard(
                 checked = settings.uiSoundsEnabled,
                 onCheckedChange = onSetUiSounds,
                 testTag = "ui_sounds_switch"
+            )
+
+            SettingsSwitchRow(
+                title = "UI Navigation & Toggle Vibration",
+                subtitle = "Vibrate on navigation tabs, Settings switches & dialpad keys",
+                checked = settings.uiVibrationEnabled,
+                onCheckedChange = onSetUiVibration,
+                testTag = "ui_vibration_switch"
             )
 
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -627,9 +646,13 @@ fun SettingsSwitchRow(
             )
         }
         Spacer(modifier = Modifier.width(8.dp))
+        val hapticPulse = LocalUiHapticPulse.current
         Switch(
             checked = checked,
-            onCheckedChange = onCheckedChange,
+            onCheckedChange = { newValue ->
+                hapticPulse()
+                onCheckedChange(newValue)
+            },
             modifier = if (testTag != null) Modifier.testTag(testTag) else Modifier
         )
     }

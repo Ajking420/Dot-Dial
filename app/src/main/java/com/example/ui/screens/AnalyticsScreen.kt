@@ -52,6 +52,7 @@ import com.example.ui.components.DotMatrixTagChip
 import com.example.ui.components.NothingSurfaceCard
 import com.example.ui.components.SectionHeaderRow
 import com.example.ui.theme.DotGothicFamily
+import com.example.ui.theme.LocalUiHapticPulse
 import com.example.viewmodel.AnalyticsPeriod
 import com.example.viewmodel.CallAnalyticsSummary
 import com.example.viewmodel.DailyCallMetric
@@ -424,9 +425,13 @@ fun AnalyticsScreen(
                         )
                     }
                     Row(verticalAlignment = Alignment.CenterVertically) {
+                        val hapticPulse = LocalUiHapticPulse.current
                         Switch(
                             checked = rule.isEnabled,
-                            onCheckedChange = { onToggleSpamRule(rule) }
+                            onCheckedChange = {
+                                hapticPulse()
+                                onToggleSpamRule(rule)
+                            }
                         )
                         IconButton(
                             onClick = { onDeleteSpamRule(rule.id) },

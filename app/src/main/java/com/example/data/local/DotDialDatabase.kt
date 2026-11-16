@@ -29,7 +29,7 @@ class DotDialConverters {
         VibrationPatternEntity::class,
         SpamRuleEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 @TypeConverters(DotDialConverters::class)
@@ -51,6 +51,13 @@ abstract class DotDialDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE contacts ADD COLUMN callerBackdropMode TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE contacts ADD COLUMN backdropPhotoUri TEXT")
+            }
+        }
+
         fun getInstance(context: Context): DotDialDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -58,7 +65,7 @@ abstract class DotDialDatabase : RoomDatabase() {
                     DotDialDatabase::class.java,
                     "dot_dial_vault.db"
                 )
-                    .addMigrations(MIGRATION_2_3)
+                    .addMigrations(MIGRATION_2_3, MIGRATION_3_4)
                     .fallbackToDestructiveMigration(true)
                     .build()
                     .also { db ->

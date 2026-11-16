@@ -1,6 +1,7 @@
 package com.example.data.ai
 
 import android.util.Log
+import com.example.data.preferences.AiAssistantLanguageMode
 import com.google.firebase.Firebase
 import com.google.firebase.ai.ai
 import com.google.firebase.ai.type.Schema
@@ -49,6 +50,28 @@ data class SpamRiskAssessment(
     val classification: String,
     val reason: String,
     val recommendedAction: String
+)
+
+enum class AssistantReplyLanguage(
+    val code: String,
+    val displayLabel: String,
+    val languageTag: String
+) {
+    EN("EN", "English", "en-IN"),
+    HI("HI", "Hindi", "hi-IN"),
+    BN("BN", "Bengali", "bn-IN");
+
+    companion object {
+        fun fromCode(code: String?): AssistantReplyLanguage =
+            entries.firstOrNull { it.code.equals(code?.trim(), ignoreCase = true) } ?: EN
+    }
+}
+
+data class AiAssistantTurnResult(
+    val replyText: String,
+    val language: AssistantReplyLanguage,
+    val callerPurposeTag: String,
+    val shouldEndCall: Boolean
 )
 
 class GeminiAiRepository {
@@ -123,6 +146,34 @@ class GeminiAiRepository {
             generationConfig = generationConfig {
                 responseMimeType = "application/json"
                 responseSchema = spamSchema
+            }
+        )
+    }
+
+    private val assistantSchema = Schema.obj(
+        properties = mapOf(
+            "replyText" to Schema.string(
+                description = "Natural 1 to 2 sentence spoken reply in the target language (Devanagari for HI, Bengali script for BN, English for EN). No markdown or emojis."
+            ),
+            "languageCode" to Schema.enumeration(
+                values = listOf("EN", "HI", "BN"),
+                description = "Language code of replyText: EN for English, HI for Hindi, BN for Bengali"
+            ),
+            "callerPurposeTag" to Schema.string(
+                description = "2 to 5 word summary of why the caller is calling"
+            ),
+            "shouldEndCall" to Schema.boolean(
+                description = "True only if the caller clearly finished explaining and said goodbye or confirmed they are done"
+            )
+        )
+    )
+
+    private val assistantModel by lazy {
+        Firebase.ai.generativeModel(
+            modelName = "gemini-3.8-flash",
+            generationConfig = generationConfig {
+                responseMimeType = "application/json"
+                responseSchema = assistantSchema
             }
         )
     }
@@ -264,6 +315,75 @@ class GeminiAiRepository {
             throw e
         } catch (e: Exception) {
             Log.e(TAG, "Spam check failed", e)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun generateCallAssistantReply(
+        ownerName: String,
+        callerName: String,
+        phoneNumber: String,
+        languageMode: AiAssistantLanguageMode,
+        historyLines: List<String>,
+        latestCallerSpeech: String
+    ): Result<AiAssistantTurnResult> {
+        return try {
+            val langInstruction = when (languageMode) {
+                AiAssistantLanguageMode.AUTO,
+                AiAssistantLanguageMode.ENGLISH_GREET_AUTO ->
+                    "Detect whether the caller spoke English, Hindi (including Hinglish), or Bengali (including Banglish), and reply naturally in that exact same language (use Devanagari script for Hindi, Bengali script for Bengali, English for English)."
+                AiAssistantLanguageMode.ENGLISH ->
+                    "Always reply in natural, polite English and set languageCode to EN."
+                AiAssistantLanguageMode.HINDI ->
+                    "Always reply in natural conversational Hindi using Devanagari script and set languageCode to HI."
+                AiAssistantLanguageMode.BENGALI ->
+                    "Always reply in natural conversational Bengali using Bengali script and set languageCode to BN."
+            }
+
+            val prompt = buildString {
+                appendLine("You are the personal AI call assistant for $ownerName on their Android phone.")
+                appendLine("$ownerName is currently busy and cannot take the call. You have already notified $ownerName that this caller rang and will call back as soon as possible.")
+                appendLine("Caller info: $callerName ($phoneNumber)")
+                appendLine("Language rule: $langInstruction")
+                appendLine("Style rule: Keep replyText to 1 or 2 crisp, warm spoken sentences suitable for Text-To-Speech. Acknowledge what the caller said, ask a brief clarifying detail only if needed (name, urgency, or message), or reassure them $ownerName will call back shortly.")
+                if (historyLines.isNotEmpty()) {
+                    appendLine("Previous conversation turns:")
+                    historyLines.takeLast(8).forEach { appendLine(it) }
+                }
+                appendLine("Caller just said: \"$latestCallerSpeech\"")
+            }
+
+            val response = withTimeout(30_000L) {
+                assistantModel.generateContent(prompt)
+            }
+            val rawJson = response.text ?: throw IllegalStateException("AI assistant returned empty reply.")
+            val json = JSONObject(rawJson)
+
+            val lang = AssistantReplyLanguage.fromCode(json.optString("languageCode", "EN"))
+            val forcedLang = when (languageMode) {
+                AiAssistantLanguageMode.ENGLISH -> AssistantReplyLanguage.EN
+                AiAssistantLanguageMode.HINDI -> AssistantReplyLanguage.HI
+                AiAssistantLanguageMode.BENGALI -> AssistantReplyLanguage.BN
+                else -> lang
+            }
+
+            Result.success(
+                AiAssistantTurnResult(
+                    replyText = json.optString("replyText").ifBlank {
+                        "Thank you for sharing that. I have noted your message for $ownerName."
+                    },
+                    language = forcedLang,
+                    callerPurposeTag = json.optString("callerPurposeTag", "Callback request"),
+                    shouldEndCall = json.optBoolean("shouldEndCall", false)
+                )
+            )
+        } catch (e: TimeoutCancellationException) {
+            Log.e(TAG, "AI assistant turn timed out", e)
+            Result.failure(IllegalStateException("AI assistant timed out waiting for Gemini."))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "AI assistant reply failed", e)
             Result.failure(e)
         }
     }

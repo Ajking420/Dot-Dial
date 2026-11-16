@@ -1,5 +1,6 @@
 package com.example.viewmodel
 
+import android.app.PendingIntent
 import com.example.data.ai.SpamRiskAssessment
 import com.example.data.local.CallDirection
 import com.example.data.local.CallLogEntity
@@ -8,6 +9,7 @@ import com.example.data.local.ContactEntity
 import com.example.data.local.SpamRuleEntity
 import com.example.data.local.VibrationPatternEntity
 import com.example.data.preferences.DialerSettings
+import com.example.data.system.DriveBackupFile
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -22,9 +24,22 @@ sealed interface AppRoute {
 
 enum class HistoryFilter(val label: String) {
     ALL("ALL"),
+    INCOMING("INCOMING"),
+    OUTGOING("OUTGOING"),
     MISSED("MISSED"),
     SPAM("SPAM")
 }
+
+data class PersonCallGroup(
+    val groupKey: String,
+    val displayName: String,
+    val phoneNumber: String,
+    val matchedContact: ContactEntity?,
+    val latestCall: CallLogEntity,
+    val calls: List<CallLogEntity>,
+    val callCount: Int,
+    val hasSpam: Boolean
+)
 
 enum class AnalyticsPeriod(val label: String, val days: Int?) {
     SEVEN_DAYS("7D", 7),
@@ -80,6 +95,22 @@ sealed interface SpamCheckUiState {
 data class NavigationRequest(
     val route: AppRoute,
     val nonce: Long = System.currentTimeMillis()
+)
+
+data class GoogleDriveUiState(
+    val isAuthorizing: Boolean = false,
+    val isBusy: Boolean = false,
+    val connectedEmail: String = "",
+    val displayName: String = "",
+    val pendingConsentIntent: PendingIntent? = null,
+    val availableBackups: List<DriveBackupFile> = emptyList(),
+    val statusDetail: String = "",
+    val errorMessage: String? = null
+)
+
+data class GoogleAuthUiState(
+    val isSigningIn: Boolean = false,
+    val errorMessage: String? = null
 )
 
 data class DotDialSnapshot(

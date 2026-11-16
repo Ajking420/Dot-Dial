@@ -88,17 +88,33 @@ import com.example.data.local.ContactEntity
 import com.example.data.local.ContactNumbersCodec
 import com.example.data.local.ContactPhoneNumber
 import com.example.data.local.VibrationPatternEntity
+import com.example.data.preferences.CallerBackdropMode
+import com.example.data.preferences.NewContactStorageMode
 import com.example.data.system.T9Utils
 import com.example.ui.components.ContactAvatarCircle
 import com.example.ui.components.DotMatrixTagChip
 import com.example.ui.components.NothingSurfaceCard
 import com.example.ui.components.SectionHeaderRow
 import com.example.ui.theme.LocalDotDialStyle
+import com.example.ui.theme.LocalUiHapticPulse
 
 private enum class ContactMediaTarget {
     PHOTO,
+    BACKDROP_PHOTO,
     CALLING_CARD,
     VIDEO_BACKDROP
+}
+
+private fun effectiveContactBackdropMode(contact: ContactEntity): CallerBackdropMode {
+    if (contact.callerBackdropMode.isNotBlank()) {
+        return CallerBackdropMode.fromId(contact.callerBackdropMode)
+    }
+    return when {
+        !contact.videoBackdropUri.isNullOrBlank() -> CallerBackdropMode.VIDEO
+        !contact.backdropPhotoUri.isNullOrBlank() -> CallerBackdropMode.PHOTO
+        !contact.callingCardUri.isNullOrBlank() -> CallerBackdropMode.CALLING_CARD
+        else -> CallerBackdropMode.NONE
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -111,6 +127,8 @@ fun ContactsScreen(
     showQuickActions: Boolean,
     discoveredGoogleAccounts: List<String>,
     syncedGoogleAccounts: Set<String>,
+    newContactStorageMode: NewContactStorageMode = NewContactStorageMode.GOOGLE_ACCOUNT,
+    targetGoogleContactAccount: String = "",
     onSearchChange: (String) -> Unit,
     onSyncDeviceContacts: () -> Unit,
     onToggleGoogleSync: (Boolean) -> Unit,
@@ -138,6 +156,8 @@ fun ContactsScreen(
     onAssignPhoto: (ContactEntity, Uri?) -> Unit,
     onAssignCallingCard: (ContactEntity, Uri?) -> Unit,
     onAssignVideoBackdrop: (ContactEntity, Uri?) -> Unit,
+    onAssignBackdropPhoto: (ContactEntity, Uri?) -> Unit = { _, _ -> },
+    onAssignBackdropMode: (ContactEntity, CallerBackdropMode) -> Unit = { _, _ -> },
     onAssignVibrationPattern: (ContactEntity, Long) -> Unit,
     onDeleteContact: (Long) -> Unit,
     onPinContactWidget: () -> Unit,
@@ -159,6 +179,7 @@ fun ContactsScreen(
         if (target != null && uri != null) {
             when (mediaTargetKind) {
                 ContactMediaTarget.PHOTO -> onAssignPhoto(target, uri)
+                ContactMediaTarget.BACKDROP_PHOTO -> onAssignBackdropPhoto(target, uri)
                 ContactMediaTarget.CALLING_CARD -> onAssignCallingCard(target, uri)
                 ContactMediaTarget.VIDEO_BACKDROP -> Unit
             }
@@ -184,6 +205,9 @@ fun ContactsScreen(
     val listState = rememberLazyListState()
     val favRowState = rememberLazyListState()
     val refreshedDetail = detailContact?.let { cur ->
+        contacts.firstOrNull { it.id == cur.id } ?: cur
+    }
+    val refreshedEditing = editingContact?.let { cur ->
         contacts.firstOrNull { it.id == cur.id } ?: cur
     }
 
@@ -522,6 +546,13 @@ fun ContactsScreen(
                         PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
                     )
                 },
+                onPickBackdropPhoto = {
+                    mediaTargetContact = refreshedDetail
+                    mediaTargetKind = ContactMediaTarget.BACKDROP_PHOTO
+                    imagePickerLauncher.launch(
+                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                    )
+                },
                 onPickCallingCard = {
                     mediaTargetContact = refreshedDetail
                     mediaTargetKind = ContactMediaTarget.CALLING_CARD
@@ -535,6 +566,9 @@ fun ContactsScreen(
                     videoPickerLauncher.launch(
                         PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
                     )
+                },
+                onSelectBackdropMode = { mode ->
+                    onAssignBackdropMode(refreshedDetail, mode)
                 },
                 onEdit = {
                     editingContact = refreshedDetail
@@ -563,8 +597,8 @@ fun ContactsScreen(
     }
 
     // Create / Edit Contact Sheet
-    if (showCreateDialog || editingContact != null) {
-        val current = editingContact
+    if (showCreateDialog || refreshedEditing != null) {
+        val current = refreshedEditing
         ModalBottomSheet(
             onDismissRequest = {
                 showCreateDialog = false
@@ -575,6 +609,8 @@ fun ContactsScreen(
             ContactEditorSheetContent(
                 initialContact = current,
                 vibrationPatterns = vibrationPatterns,
+                newContactStorageMode = newContactStorageMode,
+                targetGoogleContactAccount = targetGoogleContactAccount,
                 onPickVideo = { target ->
                     mediaTargetContact = target
                     mediaTargetKind = ContactMediaTarget.VIDEO_BACKDROP
@@ -589,12 +625,22 @@ fun ContactsScreen(
                         PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
                     )
                 },
+                onPickBackdropPhoto = { target ->
+                    mediaTargetContact = target
+                    mediaTargetKind = ContactMediaTarget.BACKDROP_PHOTO
+                    imagePickerLauncher.launch(
+                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                    )
+                },
                 onPickCallingCard = { target ->
                     mediaTargetContact = target
                     mediaTargetKind = ContactMediaTarget.CALLING_CARD
                     imagePickerLauncher.launch(
                         PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
                     )
+                },
+                onSelectBackdropMode = { target, mode ->
+                    onAssignBackdropMode(target, mode)
                 },
                 onClearVideo = { target -> onAssignVideoBackdrop(target, null) },
                 onToggleBlocked = { target -> onToggleBlocked(target) },
@@ -636,10 +682,13 @@ private fun GoogleStyleContactDetailSheet(
     onWhatsApp: (String) -> Unit,
     onGmail: () -> Unit,
     onPickPhoto: () -> Unit,
+    onPickBackdropPhoto: () -> Unit,
     onPickCallingCard: () -> Unit,
     onPickVideo: () -> Unit,
+    onSelectBackdropMode: (CallerBackdropMode) -> Unit,
     onEdit: () -> Unit
 ) {
+    val activeBackdrop = effectiveContactBackdropMode(contact)
     val allNumbers = remember(contact.phoneNumber, contact.additionalNumbersJson) {
         contact.allPhoneNumbers()
     }
@@ -654,7 +703,7 @@ private fun GoogleStyleContactDetailSheet(
             .padding(horizontal = 20.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        // Calling Card Hero Poster
+        // Calling Card / Gallery Photo Hero Poster
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -662,10 +711,15 @@ private fun GoogleStyleContactDetailSheet(
                 .clip(RoundedCornerShape(24.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant)
         ) {
-            if (!contact.callingCardUri.isNullOrBlank()) {
+            val heroUri = when (activeBackdrop) {
+                CallerBackdropMode.CALLING_CARD -> contact.callingCardUri
+                CallerBackdropMode.PHOTO -> contact.backdropPhotoUri ?: contact.photoUri
+                else -> contact.callingCardUri ?: contact.backdropPhotoUri
+            }
+            if (!heroUri.isNullOrBlank()) {
                 AsyncImage(
-                    model = Uri.parse(contact.callingCardUri),
-                    contentDescription = "Calling card poster",
+                    model = Uri.parse(heroUri),
+                    contentDescription = "In-call backdrop poster",
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize()
                 )
@@ -831,37 +885,112 @@ private fun GoogleStyleContactDetailSheet(
             }
         }
 
-        // Calling Card & Media Customization Buttons
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            OutlinedButton(
-                onClick = onPickPhoto,
-                shape = RoundedCornerShape(50),
-                modifier = Modifier.weight(1f).testTag("pick_contact_photo_button")
+        // Exclusive Per-Contact In-Call Backdrop Studio + Avatar Photo
+        NothingSurfaceCard(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Icon(Icons.Default.PhotoCamera, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(modifier = Modifier.width(4.dp))
-                Text("PHOTO", style = MaterialTheme.typography.labelSmall)
-            }
-            OutlinedButton(
-                onClick = onPickCallingCard,
-                shape = RoundedCornerShape(50),
-                modifier = Modifier.weight(1f).testTag("pick_calling_card_button")
-            ) {
-                Icon(Icons.Default.Badge, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(modifier = Modifier.width(4.dp))
-                Text("CARD", style = MaterialTheme.typography.labelSmall)
-            }
-            OutlinedButton(
-                onClick = onPickVideo,
-                shape = RoundedCornerShape(50),
-                modifier = Modifier.weight(1f).testTag("pick_contact_video_button")
-            ) {
-                Icon(Icons.Default.Movie, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(modifier = Modifier.width(4.dp))
-                Text("VIDEO", style = MaterialTheme.typography.labelSmall)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "IN-CALL BACKDROP (1 ACTIVE AT A TIME)",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    TextButton(
+                        onClick = onPickPhoto,
+                        modifier = Modifier.testTag("pick_contact_photo_button")
+                    ) {
+                        Text("AVATAR PHOTO", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    DotMatrixTagChip(
+                        label = if (activeBackdrop == CallerBackdropMode.VIDEO) "VIDEO • ON" else "VIDEO • OFF",
+                        active = activeBackdrop == CallerBackdropMode.VIDEO,
+                        onClick = {
+                            if (activeBackdrop == CallerBackdropMode.VIDEO) {
+                                onSelectBackdropMode(CallerBackdropMode.NONE)
+                            } else if (!contact.videoBackdropUri.isNullOrBlank()) {
+                                onSelectBackdropMode(CallerBackdropMode.VIDEO)
+                            } else {
+                                onPickVideo()
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
+                        testTag = "pick_contact_video_button"
+                    )
+                    DotMatrixTagChip(
+                        label = if (activeBackdrop == CallerBackdropMode.PHOTO) "PHOTO • ON" else "PHOTO • OFF",
+                        active = activeBackdrop == CallerBackdropMode.PHOTO,
+                        onClick = {
+                            if (activeBackdrop == CallerBackdropMode.PHOTO) {
+                                onSelectBackdropMode(CallerBackdropMode.NONE)
+                            } else if (!(contact.backdropPhotoUri ?: contact.photoUri).isNullOrBlank()) {
+                                onSelectBackdropMode(CallerBackdropMode.PHOTO)
+                            } else {
+                                onPickBackdropPhoto()
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
+                        testTag = "pick_contact_backdrop_photo_button"
+                    )
+                    DotMatrixTagChip(
+                        label = if (activeBackdrop == CallerBackdropMode.CALLING_CARD) "CARD • ON" else "CARD • OFF",
+                        active = activeBackdrop == CallerBackdropMode.CALLING_CARD,
+                        onClick = {
+                            if (activeBackdrop == CallerBackdropMode.CALLING_CARD) {
+                                onSelectBackdropMode(CallerBackdropMode.NONE)
+                            } else if (!contact.callingCardUri.isNullOrBlank()) {
+                                onSelectBackdropMode(CallerBackdropMode.CALLING_CARD)
+                            } else {
+                                onPickCallingCard()
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
+                        testTag = "pick_calling_card_button"
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            when (activeBackdrop) {
+                                CallerBackdropMode.PHOTO -> onPickBackdropPhoto()
+                                CallerBackdropMode.CALLING_CARD -> onPickCallingCard()
+                                else -> onPickVideo()
+                            }
+                        },
+                        shape = RoundedCornerShape(50),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text(
+                            text = when (activeBackdrop) {
+                                CallerBackdropMode.PHOTO -> "CHANGE IN-CALL PHOTO"
+                                CallerBackdropMode.CALLING_CARD -> "CHANGE CALLING CARD"
+                                else -> "PICK / CHANGE VIDEO"
+                            },
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    }
+                    if (activeBackdrop != CallerBackdropMode.NONE) {
+                        OutlinedButton(
+                            onClick = { onSelectBackdropMode(CallerBackdropMode.NONE) },
+                            shape = RoundedCornerShape(50)
+                        ) {
+                            Text("OFF", style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                }
             }
         }
 
@@ -987,7 +1116,14 @@ private fun GoogleAccountSyncSheet(
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurface
             )
-            Switch(checked = googleSyncEnabled, onCheckedChange = onToggleSync)
+            val hapticPulse = LocalUiHapticPulse.current
+            Switch(
+                checked = googleSyncEnabled,
+                onCheckedChange = {
+                    hapticPulse()
+                    onToggleSync(it)
+                }
+            )
         }
 
         Row(
@@ -1090,9 +1226,13 @@ private fun GoogleAccountSyncSheet(
 private fun ContactEditorSheetContent(
     initialContact: ContactEntity?,
     vibrationPatterns: List<VibrationPatternEntity>,
+    newContactStorageMode: NewContactStorageMode,
+    targetGoogleContactAccount: String,
     onPickVideo: (ContactEntity) -> Unit,
     onPickPhoto: (ContactEntity) -> Unit,
+    onPickBackdropPhoto: (ContactEntity) -> Unit,
     onPickCallingCard: (ContactEntity) -> Unit,
+    onSelectBackdropMode: (ContactEntity, CallerBackdropMode) -> Unit,
     onClearVideo: (ContactEntity) -> Unit,
     onToggleBlocked: (ContactEntity) -> Unit,
     onAssignVibration: (ContactEntity, Long) -> Unit,
@@ -1142,6 +1282,42 @@ private fun ContactEditorSheetContent(
                         tint = MaterialTheme.colorScheme.error
                     )
                 }
+            }
+        }
+
+        if (initialContact == null) {
+            val savingToGoogle = newContactStorageMode == NewContactStorageMode.GOOGLE_ACCOUNT &&
+                targetGoogleContactAccount.isNotBlank()
+            val destinationLabel = when {
+                savingToGoogle -> "SAVING TO GOOGLE • $targetGoogleContactAccount"
+                newContactStorageMode == NewContactStorageMode.GOOGLE_ACCOUNT ->
+                    "NO GOOGLE ACCOUNT SIGNED IN • SAVING TO DEVICE"
+                else -> "SAVING TO DEVICE STORAGE"
+            }
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = if (savingToGoogle) {
+                    MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+                } else {
+                    MaterialTheme.colorScheme.surfaceVariant
+                },
+                border = BorderStroke(1.dp, LocalDotDialStyle.current.hairlineBorder),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("new_contact_storage_destination_pill")
+            ) {
+                Text(
+                    text = destinationLabel,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (savingToGoogle) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                )
             }
         }
 
@@ -1225,7 +1401,14 @@ private fun ContactEditorSheetContent(
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurface
             )
-            Switch(checked = isFav, onCheckedChange = { isFav = it })
+            val editorHapticPulse = LocalUiHapticPulse.current
+            Switch(
+                checked = isFav,
+                onCheckedChange = {
+                    editorHapticPulse()
+                    isFav = it
+                }
+            )
         }
 
         if (initialContact != null) {
@@ -1239,12 +1422,69 @@ private fun ContactEditorSheetContent(
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurface
                 )
+                val blockHapticPulse = LocalUiHapticPulse.current
                 Switch(
                     checked = initialContact.isBlocked,
-                    onCheckedChange = { onToggleBlocked(initialContact) }
+                    onCheckedChange = {
+                        blockHapticPulse()
+                        onToggleBlocked(initialContact)
+                    }
                 )
             }
 
+            val editorBackdrop = effectiveContactBackdropMode(initialContact)
+            Text(
+                text = "IN-CALL BACKDROP MODE (1 ACTIVE • OTHERS OFF)",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                DotMatrixTagChip(
+                    label = if (editorBackdrop == CallerBackdropMode.VIDEO) "VIDEO • ON" else "VIDEO • OFF",
+                    active = editorBackdrop == CallerBackdropMode.VIDEO,
+                    onClick = {
+                        if (editorBackdrop == CallerBackdropMode.VIDEO) {
+                            onSelectBackdropMode(initialContact, CallerBackdropMode.NONE)
+                        } else if (!initialContact.videoBackdropUri.isNullOrBlank()) {
+                            onSelectBackdropMode(initialContact, CallerBackdropMode.VIDEO)
+                        } else {
+                            onPickVideo(initialContact)
+                        }
+                    },
+                    modifier = Modifier.weight(1f)
+                )
+                DotMatrixTagChip(
+                    label = if (editorBackdrop == CallerBackdropMode.PHOTO) "PHOTO • ON" else "PHOTO • OFF",
+                    active = editorBackdrop == CallerBackdropMode.PHOTO,
+                    onClick = {
+                        if (editorBackdrop == CallerBackdropMode.PHOTO) {
+                            onSelectBackdropMode(initialContact, CallerBackdropMode.NONE)
+                        } else if (!(initialContact.backdropPhotoUri ?: initialContact.photoUri).isNullOrBlank()) {
+                            onSelectBackdropMode(initialContact, CallerBackdropMode.PHOTO)
+                        } else {
+                            onPickBackdropPhoto(initialContact)
+                        }
+                    },
+                    modifier = Modifier.weight(1f)
+                )
+                DotMatrixTagChip(
+                    label = if (editorBackdrop == CallerBackdropMode.CALLING_CARD) "CARD • ON" else "CARD • OFF",
+                    active = editorBackdrop == CallerBackdropMode.CALLING_CARD,
+                    onClick = {
+                        if (editorBackdrop == CallerBackdropMode.CALLING_CARD) {
+                            onSelectBackdropMode(initialContact, CallerBackdropMode.NONE)
+                        } else if (!initialContact.callingCardUri.isNullOrBlank()) {
+                            onSelectBackdropMode(initialContact, CallerBackdropMode.CALLING_CARD)
+                        } else {
+                            onPickCallingCard(initialContact)
+                        }
+                    },
+                    modifier = Modifier.weight(1f)
+                )
+            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -1253,22 +1493,29 @@ private fun ContactEditorSheetContent(
                     onClick = { onPickPhoto(initialContact) },
                     modifier = Modifier.weight(1f)
                 ) {
-                    Text("PHOTO", style = MaterialTheme.typography.labelSmall)
+                    Text("AVATAR PHOTO", style = MaterialTheme.typography.labelSmall)
                 }
                 OutlinedButton(
-                    onClick = { onPickCallingCard(initialContact) },
+                    onClick = {
+                        when (editorBackdrop) {
+                            CallerBackdropMode.PHOTO -> onPickBackdropPhoto(initialContact)
+                            CallerBackdropMode.CALLING_CARD -> onPickCallingCard(initialContact)
+                            else -> onPickVideo(initialContact)
+                        }
+                    },
                     modifier = Modifier.weight(1f)
                 ) {
-                    Text("CARD", style = MaterialTheme.typography.labelSmall)
-                }
-                OutlinedButton(
-                    onClick = { onPickVideo(initialContact) },
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Text("VIDEO", style = MaterialTheme.typography.labelSmall)
+                    Text(
+                        text = when (editorBackdrop) {
+                            CallerBackdropMode.PHOTO -> "PICK PHOTO"
+                            CallerBackdropMode.CALLING_CARD -> "PICK CARD"
+                            else -> "PICK VIDEO"
+                        },
+                        style = MaterialTheme.typography.labelSmall
+                    )
                 }
             }
-            if (initialContact.videoBackdropUri != null) {
+            if (initialContact.videoBackdropUri != null && editorBackdrop == CallerBackdropMode.VIDEO) {
                 TextButton(onClick = { onClearVideo(initialContact) }) {
                     Text("CLEAR VIDEO BACKDROP")
                 }
@@ -1290,7 +1537,7 @@ private fun ContactEditorSheetContent(
             )
         }
         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(vibrationPatterns, key = { it.id }) { pattern ->
+            items(vibrationPatterns, key = { it.id }, contentType = { "vibration_pattern" }) { pattern ->
                 DotMatrixTagChip(
                     label = pattern.name,
                     active = selectedVibId == pattern.id,

@@ -31,8 +31,11 @@ import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.PhoneInTalk
+import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -69,10 +72,13 @@ import kotlin.math.roundToInt
 @Composable
 fun IncomingFloatingTopBanner(
     session: CallSessionState,
+    aiAssistantEnabled: Boolean = false,
     onAnswerToStatusBar: () -> Unit,
     onReject: () -> Unit,
     onSwipeUpMute: () -> Unit,
     onExpandFullScreen: () -> Unit,
+    onStartAiAssistant: () -> Unit = {},
+    onCancelAiCountdown: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val scope = rememberCoroutineScope()
@@ -127,105 +133,154 @@ fun IncomingFloatingTopBanner(
             tonalElevation = 10.dp,
             shadowElevation = 12.dp
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Row(
-                    modifier = Modifier.weight(1f),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    ContactAvatarCircle(
-                        name = session.displayName.ifBlank { session.phoneNumber },
-                        photoUri = session.contactPhotoUri,
-                        size = 44.dp,
-                        highlighted = true
-                    )
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            PulsingDotIndicator(
-                                color = if (session.isSpamWarning) NothingRed else MatrixEmerald,
-                                size = 7.dp
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            modifier = Modifier.weight(1f),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            ContactAvatarCircle(
+                                name = session.displayName.ifBlank { session.phoneNumber },
+                                photoUri = session.contactPhotoUri,
+                                size = 44.dp,
+                                highlighted = true
                             )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = session.displayName.ifBlank { session.phoneNumber },
-                                style = MaterialTheme.typography.titleMedium,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            if (session.isSpamWarning) {
-                                Icon(
-                                    imageVector = Icons.Default.Warning,
-                                    contentDescription = "Spam risk",
-                                    tint = MaterialTheme.colorScheme.error,
-                                    modifier = Modifier.size(13.dp)
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    PulsingDotIndicator(
+                                        color = if (session.isSpamWarning) NothingRed else MatrixEmerald,
+                                        size = 7.dp
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = session.displayName.ifBlank { session.phoneNumber },
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    if (session.isSpamWarning) {
+                                        Icon(
+                                            imageVector = Icons.Default.Warning,
+                                            contentDescription = "Spam risk",
+                                            tint = MaterialTheme.colorScheme.error,
+                                            modifier = Modifier.size(13.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                    }
+                                    Text(
+                                        text = "${session.phoneNumber} • Swipe up to mute",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
                             }
-                            Text(
-                                text = "${session.phoneNumber} • Swipe up to mute",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
+                        }
+
+                        Spacer(modifier = Modifier.width(8.dp))
+
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (aiAssistantEnabled) {
+                                Surface(
+                                    shape = CircleShape,
+                                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.65f)),
+                                    modifier = Modifier
+                                        .size(44.dp)
+                                        .clip(CircleShape)
+                                        .clickable(onClick = onStartAiAssistant)
+                                        .testTag("floating_popup_ai_answer")
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(
+                                            imageVector = Icons.Default.SmartToy,
+                                            contentDescription = "Let AI Assistant answer",
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+                                }
+                            }
+                            Button(
+                                onClick = onReject,
+                                shape = CircleShape,
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = NothingRed,
+                                    contentColor = MaterialTheme.colorScheme.onPrimary
+                                ),
+                                contentPadding = PaddingValues(0.dp),
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .testTag("floating_popup_reject")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.CallEnd,
+                                    contentDescription = "Reject incoming call",
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                            Button(
+                                onClick = onAnswerToStatusBar,
+                                shape = CircleShape,
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MatrixEmerald,
+                                    contentColor = NothingBlack
+                                ),
+                                contentPadding = PaddingValues(0.dp),
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .testTag("floating_popup_accept")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Call,
+                                    contentDescription = "Accept incoming call",
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
                         }
                     }
-                }
 
-                Spacer(modifier = Modifier.width(8.dp))
-
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Button(
-                        onClick = onReject,
-                        shape = CircleShape,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = NothingRed,
-                            contentColor = MaterialTheme.colorScheme.onPrimary
-                        ),
-                        contentPadding = PaddingValues(0.dp),
-                        modifier = Modifier
-                            .size(48.dp)
-                            .testTag("floating_popup_reject")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.CallEnd,
-                            contentDescription = "Reject incoming call",
-                            modifier = Modifier.size(22.dp)
-                        )
-                    }
-                    Button(
-                        onClick = onAnswerToStatusBar,
-                        shape = CircleShape,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MatrixEmerald,
-                            contentColor = NothingBlack
-                        ),
-                        contentPadding = PaddingValues(0.dp),
-                        modifier = Modifier
-                            .size(48.dp)
-                            .testTag("floating_popup_accept")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Call,
-                            contentDescription = "Accept incoming call",
-                            modifier = Modifier.size(22.dp)
-                        )
+                    if (session.aiCountdownSecondsLeft > 0) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = 14.dp, end = 14.dp, bottom = 10.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "AI ASSISTANT ANSWERING IN ${session.aiCountdownSecondsLeft}s",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                text = "CANCEL AI",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.error,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable(onClick = onCancelAiCountdown)
+                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                                    .testTag("floating_popup_cancel_ai")
+                            )
+                        }
                     }
                 }
             }
-        }
     }
 }
 
