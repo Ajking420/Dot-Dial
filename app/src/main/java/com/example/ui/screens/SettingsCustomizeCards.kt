@@ -494,7 +494,7 @@ fun DisplayAndAudioSettingsCard(
 
             SettingsSwitchRow(
                 title = "Ultra-Smooth Low-Overdraw Mode",
-                subtitle = "Disables heavy text blur shadows for zero-jank scrolling",
+                subtitle = "Uses a flat background and disables text glow to reduce graphics work while scrolling",
                 checked = settings.ultraSmoothMode,
                 onCheckedChange = onSetUltraSmoothMode,
                 testTag = "ultra_smooth_switch"
