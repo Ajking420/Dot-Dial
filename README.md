@@ -11,7 +11,7 @@
   </p>
 </div>
 
-> The repository's canonical v2.2 build input is **`DotDial_v2.2_scroll_performance_fixed_source.zip`**. The GitHub Actions workflow extracts this archive before compiling. Do not use the older root-level `app/` checkout as the v2.2 source of truth.
+> The canonical v2.2 build input is **`DotDial_v2.2_scroll_performance_fixed_source.zip`**. The repository's root-level `app/` and Gradle files have now been synchronized from this archive, and the GitHub Actions build workflow extracts the same archive before compiling.
 
 ## Overview
 
