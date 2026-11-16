@@ -1,10 +1,14 @@
-name: Build DotDial debug APK
+name: Build DotDial optimized release APK
 
 on:
   workflow_dispatch:
   push:
     paths:
       - '.github/workflows/build-dotdial-apk.yml'
+      - 'app/**'
+      - 'gradle/**'
+      - 'build.gradle.kts'
+      - 'settings.gradle.kts'
 
 permissions:
   contents: read
@@ -22,17 +26,18 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Generate debug signing key
+      # One-off CI key for sideload testing. This is not a Play Store upload key.
+      - name: Generate CI signing key
         run: >-
           keytool -genkeypair -v
-          -keystore debug.keystore
-          -storepass android
-          -alias androiddebugkey
-          -keypass android
+          -keystore my-upload-key.jks
+          -storepass dotdial-ci-only
+          -alias upload
+          -keypass dotdial-ci-only
           -keyalg RSA
           -keysize 2048
           -validity 10000
-          -dname "CN=Android Debug,O=Android,C=US"
+          -dname "CN=DotDial CI Build,O=DotDial,C=IN"
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
@@ -47,13 +52,17 @@ jobs:
       - name: Install Android SDK 36.1
         run: sdkmanager "platforms;android-36.1" "build-tools;36.0.0"
 
-      - name: Build debug APK
-        run: gradle :app:assembleDebug --no-daemon
+      - name: Build optimized release APK
+        env:
+          KEYSTORE_PATH: ${{ github.workspace }}/my-upload-key.jks
+          STORE_PASSWORD: dotdial-ci-only
+          KEY_PASSWORD: dotdial-ci-only
+        run: gradle :app:assembleRelease --no-daemon
 
-      - name: Upload APK artifact
+      - name: Upload optimized APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Dot-Dial-debug
-          path: app/build/outputs/apk/debug/*.apk
+          name: Dot-Dial-optimized-release
+          path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
           retention-days: 7
