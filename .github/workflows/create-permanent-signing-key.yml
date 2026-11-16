@@ -1,0 +1,66 @@
+name: Create permanent Dot Dial signing key
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  create-key:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate a permanent release keystore
+        id: key
+        shell: bash
+        run: |
+          set -euo pipefail
+          STORE_PASS="$(openssl rand -base64  thirtytwo | tr -dc 'A-Za-z0-9' | head -c 32)"
+          KEY_PASS="$(openssl rand -base64  thirtytwo | tr -dc 'A-Za-z0-9' | head -c 32)"
+          ALIAS="dotdialrelease"
+          keytool -genkeypair -v \
+            -keystore dotdial-release.jks \
+            -storetype JKS \
+            -storepass "$STORE_PASS" \
+            -alias "$ALIAS" \
+            -keypass "$KEY_PASS" \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Dot Dial Release,O=DotDial,C=IN"
+          keytool -list -v -keystore dotdial-release.jks -storepass "$STORE_PASS" -alias "$ALIAS" > certificate.txt
+          SHA1="$(awk -F': ' '/SHA1:/{print $2; exit}' certificate.txt)"
+          SHA256="$(awk -F': ' '/SHA256:/{print $2; exit}' certificate.txt)"
+          base64 -w 0 dotdial-release.jks > KEYSTORE_BASE64.txt
+          {
+            echo "STORE_PASSWORD=$STORE_PASS"
+            echo "KEY_PASSWORD=$KEY_PASS"
+            echo "KEY_ALIAS=$ALIAS"
+            echo "SHA1=$SHA1"
+            echo "SHA256=$SHA256"
+          } > SIGNING_CREDENTIALS.txt
+          {
+            echo "## Permanent Dot Dial signing key created"
+            echo
+            echo "**Save these values securely.** They are needed to configure GitHub Actions Secrets."
+            echo
+            echo ' `KEYSTORE_PASSWORD`: `'$STORE_PASS'`'
+            echo
+            echo ' `KEY_PASSWORD`: `'$KEY_PASS'`'
+            echo
+            echo ' `KEY_ALIAS`: `'$ALIAS'`'
+            echo
+            echo "**SHA-1:** `$SHA1`"
+            echo
+            echo "**SHA-256:** `$SHA256`"
+            echo
+            echo "Download the one-time artifact named `DotDial-Permanent-Signing-Key`. It contains the keystore, its Base64 form, and credentials. Keep it private and do not commit it to the repository."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload signing materials (one day only)
+        uses: actions/upload-artifact@v4
+        with:
+          name: DotDial-Permanent-Signing-Key
+          path: |
+            dotdial-release.jks
+            KEYSTORE_BASE64.txt
+            SIGNING_CREDENTIALS.txt
+          retention-days: 1
+          if-no-files-found: error
