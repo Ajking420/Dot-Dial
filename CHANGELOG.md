@@ -1,16 +1,19 @@
 # Changelog
 
-## v2.2 — scroll performance update
+## v2.2 — Stable
 
-- Corrected refresh-rate selection for the dialer's display-mode preference.
-- When the requested refresh rate is supported, the exact mode is selected.
-- When the exact rate is unavailable, the selector chooses the lowest supported rate above the requested target, falling back to the fastest compatible mode.
-- `AUTO` leaves display-mode selection to Android.
-- Google Sign-In was restored for the tested scroll-fixed APK by registering that APK's signing-certificate SHA-1 fingerprint in Firebase. This is a Firebase project configuration change, not a change to the Google Sign-In source implementation.
+- Fixed the scrolling-performance issue in the dialer interface.
+- Improved display refresh-rate selection: use an exact supported mode when available, otherwise select a compatible mode according to the configured target. `AUTO` leaves display-mode selection to Android.
+- Configured the release build to use a persistent signing key so future updates can retain the same Android signing identity.
+- Registered the permanent release certificate's SHA-1 fingerprint in Firebase for Google Sign-In.
+- Built and packaged the v2.2 release APK successfully with the permanent signing key.
 
-### Distribution note
+### Installation and update notes
 
-The tested v2.2 APK must retain its signing certificate for in-place updates. Do not create a new temporary keystore for a later build and expect Android/Firebase sign-in compatibility to remain unchanged.
+- Install the **v2.2 Stable** APK from the [GitHub Releases page](https://github.com/Ajking420/Dot-Dial/releases/tag/v2.2-stable).
+- This Stable APK uses the permanent release certificate. It may not install as an in-place update over an earlier APK signed with a different certificate. Back up app data before removing an older installation.
+- Future releases must be signed with the same permanent key to support in-place Android updates.
+- Google Sign-In should be verified on-device after installing this signed APK.
 
 ## Previous release
 
