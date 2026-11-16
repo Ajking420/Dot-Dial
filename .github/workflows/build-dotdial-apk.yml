@@ -1,14 +1,10 @@
-name: Build DotDial optimized release APK
+name: Build DotDial v2.2 scroll-fixed release APK
 
 on:
   workflow_dispatch:
   push:
     paths:
-      - '.github/workflows/build-dotdial-apk.yml'
-      - 'app/**'
-      - 'gradle/**'
-      - 'build.gradle.kts'
-      - 'settings.gradle.kts'
+      - 'DotDial_v2.2_scroll_performance_fixed_source.zip'
 
 permissions:
   contents: read
@@ -17,8 +13,24 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Check out source
+      - name: Check out repository
         uses: actions/checkout@v4
+
+      - name: Extract uploaded v2.2 source over the old checkout
+        run: |
+          SOURCE_ZIP="DotDial_v2.2_scroll_performance_fixed_source.zip"
+          test -f "$SOURCE_ZIP" || { echo "::error::Upload $SOURCE_ZIP to the repository root first."; exit 1; }
+          mkdir -p "$RUNNER_TEMP/dotdial-v22"
+          unzip -oq "$SOURCE_ZIP" -d "$RUNNER_TEMP/dotdial-v22"
+          test -f "$RUNNER_TEMP/dotdial-v22/app/build.gradle.kts"
+          rm -rf app gradle
+          cp -a "$RUNNER_TEMP/dotdial-v22/app" ./app
+          cp -a "$RUNNER_TEMP/dotdial-v22/gradle" ./gradle
+          cp "$RUNNER_TEMP/dotdial-v22/build.gradle.kts" ./build.gradle.kts
+          cp "$RUNNER_TEMP/dotdial-v22/settings.gradle.kts" ./settings.gradle.kts
+          cp "$RUNNER_TEMP/dotdial-v22/gradle.properties" ./gradle.properties
+          grep -q 'versionCode = 8' app/build.gradle.kts
+          grep -q 'versionName = "2.2"' app/build.gradle.kts
 
       - name: Set up JDK 21
         uses: actions/setup-java@v4
@@ -26,7 +38,7 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      # One-off CI key for sideload testing. This is not a Play Store upload key.
+      # This temporary key is for sideload testing only, not Play Store publishing.
       - name: Generate CI signing key
         run: >-
           keytool -genkeypair -v
@@ -37,7 +49,7 @@ jobs:
           -keyalg RSA
           -keysize 2048
           -validity 10000
-          -dname "CN=DotDial CI Build,O=DotDial,C=IN"
+          -dname "CN=DotDial v2.2 CI Build,O=DotDial,C=IN"
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
@@ -57,17 +69,17 @@ jobs:
             ln -s android-37.0 "$ANDROID_HOME/platforms/android-37"
           fi
 
-      - name: Build optimized release APK
+      - name: Build v2.2 release APK
         env:
           KEYSTORE_PATH: ${{ github.workspace }}/my-upload-key.jks
           STORE_PASSWORD: dotdial-ci-only
           KEY_PASSWORD: dotdial-ci-only
         run: gradle :app:assembleRelease --no-daemon
 
-      - name: Upload optimized APK artifact
+      - name: Upload v2.2 APK
         uses: actions/upload-artifact@v4
         with:
-          name: Dot-Dial-optimized-release
+          name: Dot-Dial-v2.2-scroll-fixed
           path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
           retention-days: 7
