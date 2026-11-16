@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       build_run_id:
-        description: "Successful build run ID containing Dot-Dial-v2.2-scroll-fixed-scroll-fixed"
+        description: "Successful build run ID containing Dot-Dial-v2.2-scroll-fixed"
         required: true
         default: "43873234625"
   push:
@@ -28,7 +28,7 @@ jobs:
           mkdir -p dist
           gh run download "$BUILD_RUN_ID" \
             --repo "$GITHUB_REPOSITORY" \
-            --name "Dot-Dial-v2.2-scroll-fixed-scroll-fixed" \
+            --name "Dot-Dial-v2.2-scroll-fixed" \
             --dir dist
           APK="$(find dist -type f -name '*.apk' -print -quit)"
           test -n "$APK" || { echo "::error::APK not found in the selected build artifact"; exit 1; }
