@@ -118,7 +118,7 @@ fun DotDialBackgroundHost(
                 }
             }
 
-            if (settings.dotMatrixEnabled) {
+            if (settings.dotMatrixEnabled && !settings.ultraSmoothMode) {
                 Box(
                     modifier = modifier
                         .fillMaxSize()
@@ -197,7 +197,7 @@ fun DotDialBackgroundHost(
                     .fillMaxSize()
                     .background(if (settings.amoledBlackEnabled) Color.Black else themeBg)
             ) {
-                if (wallpaperFile != null) {
+                if (wallpaperFile != null && !settings.ultraSmoothMode) {
                     val request = remember(wallpaperPath) {
                         ImageRequest.Builder(context)
                             .data(wallpaperFile)
