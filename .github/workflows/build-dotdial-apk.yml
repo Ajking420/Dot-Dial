@@ -29,6 +29,8 @@ jobs:
           cp "$RUNNER_TEMP/dotdial-v22/build.gradle.kts" ./build.gradle.kts
           cp "$RUNNER_TEMP/dotdial-v22/settings.gradle.kts" ./settings.gradle.kts
           cp "$RUNNER_TEMP/dotdial-v22/gradle.properties" ./gradle.properties
+          cp "$RUNNER_TEMP/dotdial-v22/.env.example" ./.env.example
+          grep -q 'composeBom = "2025.08.00"' gradle/libs.versions.toml
           grep -q 'versionCode = 8' app/build.gradle.kts
           grep -q 'versionName = "2.2"' app/build.gradle.kts
 
