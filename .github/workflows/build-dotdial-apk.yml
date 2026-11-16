@@ -1,4 +1,4 @@
-name: Build DotDial v2.2 scroll-fixed release APK
+name: Build DotDial v2.2 Stable release APK
 
 on:
   workflow_dispatch:
