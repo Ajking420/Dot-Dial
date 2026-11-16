@@ -1,0 +1,50 @@
+name: Publish DotDial v2.2 APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: "Successful build run ID containing Dot-Dial-v2.2-scroll-fixed"
+        required: true
+        default: "43873234625"
+  push:
+    paths:
+      - ".github/workflows/publish-dotdial-release.yml"
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download the already-tested v2.2 build artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_RUN_ID: ${{ inputs.build_run_id || '43873234625' }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          gh run download "$BUILD_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name "Dot-Dial-v2.2-scroll-fixed" \
+            --dir dist
+          APK="$(find dist -type f -name '*.apk' -print -quit)"
+          test -n "$APK" || { echo "::error::APK not found in the selected build artifact"; exit 1; }
+          echo "APK_PATH=$APK" >> "$GITHUB_ENV"
+
+      - name: Create v2.2 release and attach APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! gh release view v2.2 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create v2.2 \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Dot Dial v2.2 — Scroll Fixed" \
+              --notes "Dot Dial v2.2 release. Includes the tested scroll-performance fix. Google Sign-In was verified after registering this APK signing certificate in Firebase. Preserve the same signing key for future updates."
+          fi
+          gh release upload v2.2 "$APK_PATH" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
