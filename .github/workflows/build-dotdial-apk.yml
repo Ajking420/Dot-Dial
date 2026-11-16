@@ -40,18 +40,15 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      # This temporary key is for sideload testing only, not Play Store publishing.
-      - name: Generate CI signing key
-        run: >-
-          keytool -genkeypair -v
-          -keystore my-upload-key.jks
-          -storepass dotdial-ci-only
-          -alias upload
-          -keypass dotdial-ci-only
-          -keyalg RSA
-          -keysize 2048
-          -validity 10000
-          -dname "CN=DotDial v2.2 CI Build,O=DotDial,C=IN"
+      - name: Decode permanent release signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          test -n "$KEYSTORE_BASE64" || { echo "::error::Missing KEYSTORE_BASE64 secret"; exit 1; }
+          echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/dotdial-release.jks"
+          test -s "$RUNNER_TEMP/dotdial-release.jks"
+          # The source archive pins the alias to "upload"; use the permanent key alias.
+          sed -i 's/keyAlias = "upload"/keyAlias = System.getenv("KEY_ALIAS") ?: "upload"/' app/build.gradle.kts
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
@@ -70,9 +67,10 @@ jobs:
 
       - name: Build v2.2 release APK
         env:
-          KEYSTORE_PATH: ${{ github.workspace }}/my-upload-key.jks
-          STORE_PASSWORD: dotdial-ci-only
-          KEY_PASSWORD: dotdial-ci-only
+          KEYSTORE_PATH: ${{ runner.temp }}/dotdial-release.jks
+          STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
         run: gradle :app:assembleRelease --no-daemon
 
       - name: Upload v2.2 APK
